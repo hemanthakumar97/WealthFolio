@@ -1,0 +1,15 @@
+.git
+.gitignore
+*.md
+!PRD.md
+data/
+bin/
+web/node_modules/
+web/dist/
+internal/web/dist/*
+!internal/web/dist/.gitkeep
+.env
+.env.local
+.DS_Store
+.idea/
+.vscode/

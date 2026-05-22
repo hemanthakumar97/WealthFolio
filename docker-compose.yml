@@ -1,0 +1,46 @@
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: wealthfolio-db
+    environment:
+      POSTGRES_USER: wealthfolio
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD missing — copy .env.example to .env}
+      POSTGRES_DB: wealthfolio
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    ports:
+      - '5433:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U wealthfolio -d wealthfolio']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wealthfolio-v2:local
+    container_name: wealthfolio-app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://wealthfolio:${DB_PASSWORD}@db:5432/wealthfolio?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET missing — set in .env}
+      APP_ENV: ${APP_ENV:-production}
+      TZ: ${TZ:-Asia/Kolkata}
+      PORT: 8000
+      SNAPSHOT_HOUR: ${SNAPSHOT_HOUR:-23}
+      ENABLE_MARKET_MOOD: ${ENABLE_MARKET_MOOD:-true}
+      MARKET_MOOD_HOUR: ${MARKET_MOOD_HOUR:-19}
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-10}
+      PROFILE_PIC_MAX_MB: ${PROFILE_PIC_MAX_MB:-5}
+      UPLOAD_DIR: /data/uploads
+    volumes:
+      - ./data/uploads:/data/uploads
+    ports:
+      - '3000:8000'
+    restart: unless-stopped
