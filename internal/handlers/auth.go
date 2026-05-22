@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/hemanthhku/wealthfolio-v2/internal/auth"
+	"github.com/hemanthakumar97/wealthfolio/internal/auth"
 )
 
 type AuthHandler struct {

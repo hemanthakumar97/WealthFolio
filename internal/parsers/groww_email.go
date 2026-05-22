@@ -8,7 +8,7 @@ import (
 
 	"golang.org/x/net/html"
 
-	"github.com/hemanthhku/wealthfolio-v2/internal/domain"
+	"github.com/hemanthakumar97/wealthfolio/internal/domain"
 )
 
 // GrowwEmailParser extracts NormalizedTransactions from Groww MF allotment

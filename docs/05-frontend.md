@@ -1,6 +1,6 @@
 # Frontend (`web/`)
 
-Reference for AI agents adding pages, modifying charts, or debugging queries in the WealthFolio SPA. All paths are relative to `/Volumes/Hemanth/Projects/WealthFolio-v2/`.
+Reference for AI agents adding pages, modifying charts, or debugging queries in the WealthFolio SPA. All paths are relative to `/Volumes/Hemanth/Projects/WealthFolio/`.
 
 ---
 

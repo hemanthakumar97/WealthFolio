@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hemanthhku/wealthfolio-v2/internal/domain"
+	"github.com/hemanthakumar97/wealthfolio/internal/domain"
 )
 
 // ZerodhaParser handles Zerodha tradebook / P&L exports.

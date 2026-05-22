@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hemanthhku/wealthfolio-v2/internal/parsers"
+	"github.com/hemanthakumar97/wealthfolio/internal/parsers"
 )
 
 const zerodhaCSV = `Symbol,ISIN,Exchange,Segment,Series,Trade Date,Trade Type,Auction,Quantity,Price,Trade ID,Order ID,Order Execution Time

@@ -1,4 +1,4 @@
-module github.com/hemanthhku/wealthfolio-v2
+module github.com/hemanthakumar97/wealthfolio
 
 go 1.25.0
 

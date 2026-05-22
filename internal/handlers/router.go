@@ -8,9 +8,9 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/hemanthhku/wealthfolio-v2/internal/auth"
-	"github.com/hemanthhku/wealthfolio-v2/internal/services"
-	"github.com/hemanthhku/wealthfolio-v2/internal/sse"
+	"github.com/hemanthakumar97/wealthfolio/internal/auth"
+	"github.com/hemanthakumar97/wealthfolio/internal/services"
+	"github.com/hemanthakumar97/wealthfolio/internal/sse"
 )
 
 type Deps struct {

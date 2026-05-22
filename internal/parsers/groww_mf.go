@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hemanthhku/wealthfolio-v2/internal/domain"
+	"github.com/hemanthakumar97/wealthfolio/internal/domain"
 )
 
 // GrowwMFParser handles Groww mutual-fund transaction statements.

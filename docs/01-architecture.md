@@ -1,12 +1,12 @@
 # 01 — Architecture
 
-Reference document for AI agents working on WealthFolio-v2. Read once, scan for what you need.
+Reference document for AI agents working on WealthFolio. Read once, scan for what you need.
 
 ---
 
 ## 1. Project Purpose
 
-WealthFolio-v2 is a **self-hosted, India-focused personal portfolio tracker**. It ingests trade data (Zerodha contract notes, Groww MF, INDmoney, manual entries, and Gmail-driven auto-imports), computes holdings/P&L/XIRR, fetches live prices (Google Finance for Indian equities, Yahoo Finance for US), maintains daily portfolio snapshots, and exposes AI-driven signal scoring for individual instruments. Currency conversion (USD↔INR), precious metals, and Indian market mood (MMI / Tickertape) are first-class concerns. All scheduler times are in `Asia/Kolkata`.
+WealthFolio is a **self-hosted, India-focused personal portfolio tracker**. It ingests trade data (Zerodha contract notes, Groww MF, INDmoney, manual entries, and Gmail-driven auto-imports), computes holdings/P&L/XIRR, fetches live prices (Google Finance for Indian equities, Yahoo Finance for US), maintains daily portfolio snapshots, and exposes AI-driven signal scoring for individual instruments. Currency conversion (USD↔INR), precious metals, and Indian market mood (MMI / Tickertape) are first-class concerns. All scheduler times are in `Asia/Kolkata`.
 
 ---
 
@@ -74,7 +74,7 @@ If `internal/web/dist/` is empty (running `go run` without building the frontend
 ## 4. Directory Layout
 
 ```
-WealthFolio-v2/
+WealthFolio/
 ├── cmd/server/main.go         Entrypoint: config → DB → migrate → scheduler → router → http.Server
 ├── internal/
 │   ├── auth/                  bcrypt + JWT Signer, cookie middleware (Signer.Required)

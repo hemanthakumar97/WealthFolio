@@ -9,8 +9,8 @@ import (
 	"github.com/go-co-op/gocron/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/hemanthhku/wealthfolio-v2/internal/services"
-	"github.com/hemanthhku/wealthfolio-v2/internal/sse"
+	"github.com/hemanthakumar97/wealthfolio/internal/services"
+	"github.com/hemanthakumar97/wealthfolio/internal/sse"
 )
 
 // Scheduler wraps gocron and holds references to the services it calls.

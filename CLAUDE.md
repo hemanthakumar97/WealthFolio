@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-WealthFolio v2 — Indian personal portfolio tracker. Single Go binary + embedded React SPA.
+WealthFolio — Indian personal portfolio tracker. Single Go binary + embedded React SPA.
 
 ## Wiki docs (read before making changes)
 

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hemanthhku/wealthfolio-v2/internal/domain"
+	"github.com/hemanthakumar97/wealthfolio/internal/domain"
 )
 
 // ZerodhaContractNoteParser parses plain text extracted from a Zerodha equity

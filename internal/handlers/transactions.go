@@ -18,10 +18,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
-	"github.com/hemanthhku/wealthfolio-v2/internal/auth"
-	"github.com/hemanthhku/wealthfolio-v2/internal/domain"
-	"github.com/hemanthhku/wealthfolio-v2/internal/parsers"
-	"github.com/hemanthhku/wealthfolio-v2/internal/services"
+	"github.com/hemanthakumar97/wealthfolio/internal/auth"
+	"github.com/hemanthakumar97/wealthfolio/internal/domain"
+	"github.com/hemanthakumar97/wealthfolio/internal/parsers"
+	"github.com/hemanthakumar97/wealthfolio/internal/services"
 )
 
 type TransactionsHandler struct {

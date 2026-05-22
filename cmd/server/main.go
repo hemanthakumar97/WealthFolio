@@ -11,14 +11,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hemanthhku/wealthfolio-v2/internal/auth"
-	"github.com/hemanthhku/wealthfolio-v2/internal/config"
-	"github.com/hemanthhku/wealthfolio-v2/internal/db"
-	"github.com/hemanthhku/wealthfolio-v2/internal/handlers"
-	"github.com/hemanthhku/wealthfolio-v2/internal/jobs"
-	"github.com/hemanthhku/wealthfolio-v2/internal/services"
-	"github.com/hemanthhku/wealthfolio-v2/internal/sse"
-	"github.com/hemanthhku/wealthfolio-v2/internal/web"
+	"github.com/hemanthakumar97/wealthfolio/internal/auth"
+	"github.com/hemanthakumar97/wealthfolio/internal/config"
+	"github.com/hemanthakumar97/wealthfolio/internal/db"
+	"github.com/hemanthakumar97/wealthfolio/internal/handlers"
+	"github.com/hemanthakumar97/wealthfolio/internal/jobs"
+	"github.com/hemanthakumar97/wealthfolio/internal/services"
+	"github.com/hemanthakumar97/wealthfolio/internal/sse"
+	"github.com/hemanthakumar97/wealthfolio/internal/web"
 )
 
 func main() {

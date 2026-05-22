@@ -2,7 +2,7 @@
 
 This document is a per-file reference for the service layer. It is written for AI agents debugging or extending the code. Every claim cites `file:line`.
 
-All services live in package `services` under `/Volumes/Hemanth/Projects/WealthFolio-v2/internal/services/`. They are constructed once in `internal/handlers/router.go:37-67` and shared across requests. Most services hold only a `*pgxpool.Pool` and (optionally) other services they depend on — they are stateless apart from connection pools and HTTP clients.
+All services live in package `services` under `/Volumes/Hemanth/Projects/WealthFolio/internal/services/`. They are constructed once in `internal/handlers/router.go:37-67` and shared across requests. Most services hold only a `*pgxpool.Pool` and (optionally) other services they depend on — they are stateless apart from connection pools and HTTP clients.
 
 ---
 

@@ -1,6 +1,6 @@
 # 03 — Database
 
-This document describes the WealthFolio-v2 persistence layer end-to-end. It is intended for AI agents who may need to:
+This document describes the WealthFolio persistence layer end-to-end. It is intended for AI agents who may need to:
 
 - debug a slow or wrong query against TimescaleDB,
 - design a new goose migration without breaking compression / continuous-aggregate policies,

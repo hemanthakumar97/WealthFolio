@@ -1,11 +1,11 @@
 # 06 — External Integrations & Debugging Playbook
 
-This document inventories every third-party service WealthFolio-v2 talks to, the
+This document inventories every third-party service WealthFolio talks to, the
 broker file parsers it ships with, the background jobs it runs, and the most
 common production failure modes with their fixes.
 
 All file paths are relative to the repository root
-(`/Volumes/Hemanth/Projects/WealthFolio-v2`).
+(`/Volumes/Hemanth/Projects/WealthFolio`).
 
 ---
 

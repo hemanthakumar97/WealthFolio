@@ -22,7 +22,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: wealthfolio-v2:local
+    image: wealthfolio:local
     container_name: wealthfolio-app
     depends_on:
       db:

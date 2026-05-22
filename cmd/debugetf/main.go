@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/hemanthhku/wealthfolio-v2/internal/services"
+	"github.com/hemanthakumar97/wealthfolio/internal/services"
 )
 
 func main() {

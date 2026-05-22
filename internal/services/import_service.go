@@ -8,8 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/hemanthhku/wealthfolio-v2/internal/domain"
-	"github.com/hemanthhku/wealthfolio-v2/internal/parsers"
+	"github.com/hemanthakumar97/wealthfolio/internal/domain"
+	"github.com/hemanthakumar97/wealthfolio/internal/parsers"
 )
 
 // ImportResult summarises the outcome of a batch persist operation.

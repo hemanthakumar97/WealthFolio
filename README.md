@@ -1,4 +1,4 @@
-# WealthFolio v2
+# WealthFolio
 
 Self-hosted Indian portfolio tracker — single Go binary with embedded React SPA + TimescaleDB. PWA-first; installable on iOS and Android.
 

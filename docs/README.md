@@ -1,6 +1,6 @@
-# WealthFolio v2 — Developer Wiki
+# WealthFolio — Developer Wiki
 
-This directory contains reference documentation for the entire codebase, written for AI agents and developers who need to understand, extend, or debug WealthFolio v2 without reading every source file first.
+This directory contains reference documentation for the entire codebase, written for AI agents and developers who need to understand, extend, or debug WealthFolio without reading every source file first.
 
 ---
 
@@ -20,7 +20,7 @@ This directory contains reference documentation for the entire codebase, written
 ## Quick orientation
 
 ```
-WealthFolio v2
+WealthFolio
 ├── cmd/server/main.go          Entrypoint
 ├── internal/
 │   ├── config/                 Env var config struct
