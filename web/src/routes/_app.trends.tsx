@@ -1152,14 +1152,51 @@ function TrendsPage() {
     staleTime: 60_000,
   });
 
+  const [backfillRunning, setBackfillRunning] = useState(false);
+  const [showBackfillOptions, setShowBackfillOptions] = useState(false);
+  const [bfInstrumentId, setBfInstrumentId] = useState<string>('0');
+  const [bfRewrite, setBfRewrite] = useState(true);
+
+  useEffect(() => {
+    if (!backfillRunning) return;
+    const id = setInterval(async () => {
+      try {
+        const s = await trendsApi.backfillStatus();
+        if (!s.running) {
+          clearInterval(id);
+          setBackfillRunning(false);
+          if (s.error) {
+            toast.error(`Rebuild failed: ${s.error}`);
+          } else {
+            toast.success(`Rebuilt ${s.snapshots_created} snapshots!`);
+            qc.invalidateQueries({ queryKey: ['trends'] });
+          }
+        }
+      } catch {
+        clearInterval(id);
+        setBackfillRunning(false);
+      }
+    }, 5_000);
+    return () => clearInterval(id);
+  }, [backfillRunning, qc]);
+
   const backfill = useMutation({
     mutationFn: trendsApi.backfill,
-    onSuccess: (r) => {
-      toast.success(`Successfully rebuilt ${r.snapshots_created} snaps!`);
-      qc.invalidateQueries({ queryKey: ['trends'] });
+    onSuccess: () => {
+      setBackfillRunning(true);
+      setShowBackfillOptions(false);
+      toast.info('Rebuilding history...');
     },
-    onError: () => toast.error('History reconstruction failed'),
+    onError: () => toast.error('Failed to start rebuild'),
   });
+
+  const handleStartBackfill = () => {
+    const instrumentId = parseInt(bfInstrumentId, 10);
+    backfill.mutate({
+      rewrite: instrumentId !== 0 ? true : bfRewrite,
+      instrument_id: instrumentId,
+    });
+  };
 
   // Derived label for current filter
   const filterLabel = instrumentId
@@ -1185,18 +1222,92 @@ function TrendsPage() {
             Trends
           </h1>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => backfill.mutate()}
-          disabled={backfill.isPending}
-          className="flex h-10 cursor-pointer items-center gap-2 rounded-xl border-border/60 px-4 text-xs font-bold shadow-sm transition-all duration-300 hover:bg-muted/40"
-        >
-          <RefreshCw
-            className={cn('size-4 text-muted-foreground', backfill.isPending && 'animate-spin')}
-          />
-          {backfill.isPending ? 'Rebuilding...' : 'Rebuild History'}
-        </Button>
+        <div className="flex flex-col items-end gap-2">
+          {!showBackfillOptions ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowBackfillOptions(true)}
+              disabled={backfill.isPending || backfillRunning}
+              className="flex h-10 cursor-pointer items-center gap-2 rounded-xl border-border/60 px-4 text-xs font-bold shadow-sm transition-all duration-300 hover:bg-muted/40"
+            >
+              <RefreshCw
+                className={cn('size-4 text-muted-foreground', (backfill.isPending || backfillRunning) && 'animate-spin')}
+              />
+              {backfill.isPending || backfillRunning ? 'Rebuilding...' : 'Rebuild History'}
+            </Button>
+          ) : (
+            <div className="flex flex-col gap-3 rounded-xl border border-border/60 bg-background p-3 shadow-sm">
+              <p className="text-xs font-semibold text-muted-foreground">Rebuild Options</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Select value={bfInstrumentId} onValueChange={setBfInstrumentId}>
+                  <SelectTrigger className="h-8 w-52 text-xs">
+                    <SelectValue placeholder="All instruments" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0">All instruments</SelectItem>
+                    {(instruments as Instrument[]).map((i) => (
+                      <SelectItem key={i.id} value={String(i.id)}>
+                        {i.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {bfInstrumentId === '0' && (
+                  <div className="flex overflow-hidden rounded-lg border border-border/60">
+                    <button
+                      className={cn(
+                        'px-3 py-1.5 text-xs font-medium transition-colors',
+                        bfRewrite
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:text-foreground',
+                      )}
+                      onClick={() => setBfRewrite(true)}
+                    >
+                      Rewrite
+                    </button>
+                    <button
+                      className={cn(
+                        'border-l border-border/60 px-3 py-1.5 text-xs font-medium transition-colors',
+                        !bfRewrite
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:text-foreground',
+                      )}
+                      onClick={() => setBfRewrite(false)}
+                    >
+                      Skip Existing
+                    </button>
+                  </div>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  onClick={handleStartBackfill}
+                  disabled={backfill.isPending || backfillRunning}
+                  className="h-8 text-xs"
+                >
+                  {backfill.isPending || backfillRunning ? (
+                    <>
+                      <RefreshCw className="mr-1 size-3 animate-spin" />
+                      Rebuilding...
+                    </>
+                  ) : (
+                    'Start'
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowBackfillOptions(false)}
+                  className="h-8 text-xs"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
       </header>
 
       {/* Tabs */}

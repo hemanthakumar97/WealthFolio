@@ -3,13 +3,13 @@
 ############################
 # 1. Frontend build
 ############################
-FROM node:22-alpine AS web
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
 
 WORKDIR /web
 RUN corepack enable
 
-COPY web/package.json web/pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile || pnpm install
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 
 COPY web/ ./
 RUN pnpm build
@@ -18,12 +18,16 @@ RUN pnpm build
 ############################
 # 2. Backend build (embeds SPA via go:embed)
 ############################
-FROM golang:1.23-alpine AS api
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS api
+
+ARG TARGETOS=linux
+ARG TARGETARCH
+ARG TARGETVARIANT
 
 WORKDIR /src
 RUN apk add --no-cache git
 
-COPY go.mod go.sum* ./
+COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
@@ -31,9 +35,14 @@ COPY . .
 RUN rm -rf internal/web/dist
 COPY --from=web /web/dist ./internal/web/dist
 
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -trimpath -ldflags="-w -s" \
-    -o /out/wealthfolio ./cmd/server
+# GOARM is only relevant for arm/v6 and arm/v7; strip the leading 'v'
+RUN set -eux; \
+    GOARM=""; \
+    if [ "${TARGETARCH}" = "arm" ] && [ -n "${TARGETVARIANT}" ]; then \
+      GOARM="${TARGETVARIANT#v}"; \
+    fi; \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${GOARM} \
+    go build -trimpath -ldflags="-w -s" -o /out/wealthfolio ./cmd/server
 
 
 ############################

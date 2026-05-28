@@ -25,7 +25,7 @@ import {
 
 import { portfolioApi, instrumentsApi, ASSET_TYPES } from '@/lib/api';
 import type { HoldingInfo } from '@/lib/api';
-import { formatINR, formatNumber, formatDateTime } from '@/lib/format';
+import { formatINR, formatUSD, formatNumber, formatDateTime } from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -171,7 +171,7 @@ function HoldingsPage() {
         cell: (info) => (
           <MaskedAmount
             value={info.getValue()}
-            format={formatINR}
+            format={info.row.original.currency === 'USD' ? formatUSD : formatINR}
             className="font-medium tabular-nums text-muted-foreground"
           />
         ),
@@ -198,7 +198,7 @@ function HoldingsPage() {
               {val != null ? (
                 <MaskedAmount
                   value={val}
-                  format={formatINR}
+                  format={info.row.original.currency === 'USD' ? formatUSD : formatINR}
                   className="font-medium tabular-nums text-foreground"
                 />
               ) : (

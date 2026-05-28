@@ -6,8 +6,8 @@ CREATE TABLE instruments (
     name TEXT NOT NULL,
     isin TEXT UNIQUE,
     amfi_code TEXT,
-    gfinance_symbol TEXT,
-    asset_type TEXT NOT NULL CHECK (asset_type IN ('MF','ETF','STOCK','BOND','GOLD','OTHER')),
+    yahoo_symbol TEXT,
+    asset_type TEXT NOT NULL CHECK (asset_type IN ('MF','ETF','STOCK','BOND','METAL','OTHER','US_FUND')),
     currency TEXT NOT NULL DEFAULT 'INR' CHECK (currency IN ('INR','USD')),
     exchange TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -16,7 +16,6 @@ CREATE TABLE instruments (
 
 CREATE INDEX idx_instruments_name ON instruments(name);
 CREATE INDEX idx_instruments_amfi_code ON instruments(amfi_code);
-CREATE INDEX idx_instruments_gfinance_symbol ON instruments(gfinance_symbol);
 
 
 CREATE TABLE upload_history (
@@ -52,6 +51,7 @@ CREATE TABLE transactions (
         CHECK (platform IN ('GROWW','ZERODHA','INDMONEY','MANUAL')),
     upload_id BIGINT REFERENCES upload_history(id) ON DELETE SET NULL,
     order_id TEXT,
+    trade_id TEXT,
     original_data JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -62,6 +62,9 @@ CREATE INDEX idx_transactions_platform ON transactions(platform);
 CREATE INDEX idx_transactions_order_id ON transactions(order_id);
 CREATE INDEX idx_transactions_dedup
     ON transactions(instrument_id, transaction_date, transaction_type, platform);
+CREATE UNIQUE INDEX idx_transactions_trade_id
+    ON transactions(instrument_id, trade_id, transaction_type)
+    WHERE trade_id IS NOT NULL;
 
 
 CREATE TABLE import_logs (

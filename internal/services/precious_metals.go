@@ -122,10 +122,10 @@ func (m *PreciousMetalsService) fetch(ctx context.Context) (*MetalsData, error) 
 	if s.err != nil {
 		return nil, fmt.Errorf("silver quote: %w", s.err)
 	}
-	usdINR := fx.val
-	if fx.err != nil || usdINR == 0 {
-		usdINR = 84.0
+	if fx.err != nil {
+		return nil, fmt.Errorf("precious metals: %w", fx.err)
 	}
+	usdINR := fx.val
 
 	goldUSD := g.val
 	silverUSD := s.val
@@ -333,6 +333,12 @@ func round2(v float64) float64 {
 	return math.Round(v*100) / 100
 }
 
+func normalizeCachedMetals(c *CachedMetals) {
+	if c.Data != nil && c.Data.MarketDrivers == nil {
+		c.Data.MarketDrivers = []MetalsDriver{}
+	}
+}
+
 func (m *PreciousMetalsService) fromCache(ctx context.Context) (*CachedMetals, bool) {
 	var raw []byte
 	err := m.pool.QueryRow(ctx,
@@ -346,6 +352,7 @@ func (m *PreciousMetalsService) fromCache(ctx context.Context) (*CachedMetals, b
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return nil, false
 	}
+	normalizeCachedMetals(&c)
 	return &c, true
 }
 
@@ -361,6 +368,7 @@ func (m *PreciousMetalsService) fromCacheAny(ctx context.Context) (*CachedMetals
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return nil, false
 	}
+	normalizeCachedMetals(&c)
 	return &c, true
 }
 

@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -46,9 +47,9 @@ func (pf *PriceFetcher) FetchAll(ctx context.Context) (FetchResult, error) {
 		return FetchResult{}, nil
 	}
 
-	usdINR, _ := pf.fx.USDToINR(ctx)
-	if usdINR.IsZero() {
-		usdINR = decimal.NewFromFloat(84.0)
+	usdINR, err := pf.fx.USDToINR(ctx)
+	if err != nil {
+		return FetchResult{}, fmt.Errorf("price fetch: %w", err)
 	}
 
 	mfapiClient := NewMFAPIClient()
@@ -137,9 +138,9 @@ func (pf *PriceFetcher) FetchForInstrument(ctx context.Context, instrumentID int
 		return decimal.Zero, err
 	}
 
-	usdINR, _ := pf.fx.USDToINR(ctx)
-	if usdINR.IsZero() {
-		usdINR = decimal.NewFromFloat(84.0)
+	usdINR, err := pf.fx.USDToINR(ctx)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("price fetch single: %w", err)
 	}
 
 	price, source, err := pf.fetchLatestPrice(ctx, instr, NewMFAPIClient(), NewYahooClient(), usdINR)

@@ -6,6 +6,12 @@ const inr = new Intl.NumberFormat('en-IN', {
   maximumFractionDigits: 2,
 });
 
+const usd = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 2,
+});
+
 const num = new Intl.NumberFormat('en-IN', {
   maximumFractionDigits: 4,
 });
@@ -15,6 +21,12 @@ const pct = new Intl.NumberFormat('en-IN', {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
+
+export function formatUSD(n: number | string | null | undefined): string {
+  const v = typeof n === 'string' ? Number(n) : n;
+  if (v == null || Number.isNaN(v)) return '—';
+  return usd.format(v);
+}
 
 export function formatINR(n: number | string | null | undefined): string {
   const v = typeof n === 'string' ? Number(n) : n;

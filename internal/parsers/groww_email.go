@@ -29,6 +29,10 @@ type GrowwEmailParser struct{}
 // ParseEmail parses the HTML body of a Groww allotment email.
 // receivedAt is used as the transaction date when no date appears in the body.
 func (p *GrowwEmailParser) ParseEmail(htmlBody, messageID, subject string, receivedAt time.Time) ([]NormalizedTransaction, []error) {
+	if !strings.Contains(subject, "Units allocated") {
+		return nil, nil
+	}
+
 	records := extractEmailRecords(htmlBody)
 
 	// Fallback to regex if DOM yielded nothing.

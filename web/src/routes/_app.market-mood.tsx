@@ -408,7 +408,7 @@ function PreciousMetalsWidget({ data }: { data: MetalsData }) {
       </div>
 
       {/* Market drivers */}
-      {data.market_drivers.length > 0 && (
+      {(data.market_drivers?.length ?? 0) > 0 && (
         <div className="border-t border-border pt-3 space-y-1.5">
           <p className="text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
             <TrendingUp className="size-3.5" /> Market Drivers

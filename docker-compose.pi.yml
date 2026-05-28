@@ -1,0 +1,60 @@
+# Raspberry Pi deployment (arm64 / arm/v7)
+# The image is multi-arch — Docker picks the right variant automatically.
+#
+# First-time setup:
+#   cp .env.example .env        # fill in DB_PASSWORD + JWT_SECRET
+#
+# Build & push a multi-arch image from your dev machine:
+#   make docker-push IMAGE=ghcr.io/you/wealthfolio TAG=latest
+#
+# On the Pi — pull and start:
+#   docker compose -f docker-compose.pi.yml pull
+#   docker compose -f docker-compose.pi.yml up -d
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: wealthfolio-db
+    environment:
+      POSTGRES_USER: wealthfolio
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD missing — copy .env.example to .env}
+      POSTGRES_DB: wealthfolio
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U wealthfolio -d wealthfolio']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks:
+      - wealthfolio
+
+  app:
+    image: hemanthhku/wealthfolio:latest
+    pull_policy: always
+    container_name: wealthfolio-app
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./data/uploads:/data/uploads
+    ports:
+      - '3000:8000'
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    networks:
+      - wealthfolio
+
+networks:
+  wealthfolio:
+    driver: bridge

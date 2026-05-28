@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -194,15 +195,11 @@ func (c *PortfolioCalculator) Holdings(ctx context.Context, f FilterParams) ([]H
 		return nil, err
 	}
 
-	usdINR, _ := c.fx.USDToINR(ctx)
-	if usdINR.IsZero() {
-		// Use the decimal package to create the fallback, then get the float
-		// But since we just need a float, we can hardcode it here
+	usdINR, err := c.fx.USDToINR(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("holdings: %w", err)
 	}
 	usdInrFloat, _ := usdINR.Float64()
-	if usdInrFloat == 0 {
-		usdInrFloat = 84.0
-	}
 
 	var out []HoldingInfo
 	for instrID, pos := range positions {
@@ -217,11 +214,16 @@ func (c *PortfolioCalculator) Holdings(ctx context.Context, f FilterParams) ([]H
 			continue
 		}
 
-		if strings.EqualFold(instr.currency, "USD") {
-			pos.avgCost *= usdInrFloat
+		isUSD := strings.EqualFold(instr.currency, "USD")
+
+		// avg_buy_price returned in native currency (USD for US funds) so it
+		// displays correctly alongside the instrument's currency label.
+		// investedAmount is always in INR for consistent portfolio totals.
+		avgCostINR := pos.avgCost
+		if isUSD {
+			avgCostINR = pos.avgCost * usdInrFloat
 		}
-		
-		investedAmount := pos.units * pos.avgCost
+		investedAmount := pos.units * avgCostINR
 		if investedAmount < 500 {
 			continue
 		}
@@ -233,7 +235,7 @@ func (c *PortfolioCalculator) Holdings(ctx context.Context, f FilterParams) ([]H
 			AssetType:      instr.assetType,
 			Currency:       instr.currency,
 			TotalUnits:     pos.units,
-			AvgBuyPrice:    pos.avgCost,
+			AvgBuyPrice:    pos.avgCost, // native currency (USD for US funds)
 			InvestedAmount: investedAmount,
 			Platform:       pos.platform,
 			Categories:     []string{},
@@ -246,8 +248,14 @@ func (c *PortfolioCalculator) Holdings(ctx context.Context, f FilterParams) ([]H
 			h.LastFetchedAt = &s
 		}
 		if instr.navPrice != nil && *instr.navPrice > 0 {
-			h.CurrentPrice = instr.navPrice
-			cv := (*instr.navPrice) * pos.units
+			// nav_price is stored in INR for USD instruments (price_fetcher converts on write).
+			// Return current_price in native currency; all totals stay in INR.
+			displayPrice := *instr.navPrice
+			if isUSD && usdInrFloat > 0 {
+				displayPrice = displayPrice / usdInrFloat
+			}
+			h.CurrentPrice = &displayPrice
+			cv := (*instr.navPrice) * pos.units // always INR
 			h.CurrentValue = &cv
 			pl := cv - investedAmount
 			h.ProfitLoss = &pl
@@ -307,11 +315,11 @@ type ClosedPositionInfo struct {
 }
 
 func (c *PortfolioCalculator) ClosedPositions(ctx context.Context, f FilterParams) ([]ClosedPositionInfo, error) {
-	usdINR, _ := c.fx.USDToINR(ctx)
-	usdInrFloat, _ := usdINR.Float64()
-	if usdInrFloat == 0 {
-		usdInrFloat = 84.0
+	usdINR, err := c.fx.USDToINR(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("closed positions: %w", err)
 	}
+	usdInrFloat, _ := usdINR.Float64()
 
 	// Walk all transactions in date order per instrument, tracking FIFO lots and
 	// accumulating the cost basis + proceeds for every sell.
@@ -500,7 +508,10 @@ func (c *PortfolioCalculator) Summary(ctx context.Context) (PortfolioSummary, er
 		return PortfolioSummary{}, err
 	}
 
-	var s PortfolioSummary
+	s := PortfolioSummary{
+		ByAssetType: []AllocationItem{},
+		ByPlatform:  []AllocationItem{},
+	}
 	s.HoldingsCount = len(holdings)
 	byType := map[string]*AllocationItem{}
 	byPlat := map[string]*AllocationItem{}

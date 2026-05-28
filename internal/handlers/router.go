@@ -107,6 +107,7 @@ func NewRouter(deps Deps) http.Handler {
 				r.Get("/benchmark", trendsH.Benchmark)
 				r.Get("/monthly-returns", trendsH.MonthlyReturns)
 				r.Post("/backfill", trendsH.Backfill)
+				r.Get("/backfill/status", trendsH.BackfillStatus)
 			})
 
 			r.Route("/transactions", func(r chi.Router) {

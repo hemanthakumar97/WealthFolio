@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"golang.org/x/oauth2"
@@ -54,7 +55,7 @@ func (h *GmailOAuthHandler) TestRun(w http.ResponseWriter, r *http.Request) {
 func (h *GmailOAuthHandler) oauthConfig(r *http.Request) *oauth2.Config {
 	// Build redirect URI from the incoming request's host so it works on any port.
 	scheme := "http"
-	if r.TLS != nil {
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 		scheme = "https"
 	}
 	redirectURI := scheme + "://" + r.Host + "/api/gmail/callback"
@@ -91,18 +92,26 @@ func (h *GmailOAuthHandler) Status(w http.ResponseWriter, r *http.Request) {
 		maskedSecret = strings.Repeat("•", len(clientSecret))
 	}
 
+	lookbackStr, _ := h.getSetting(r.Context(), "gmail_lookback_days")
+	lookbackDays := 7
+	if n, err := strconv.Atoi(lookbackStr); err == nil && n > 0 {
+		lookbackDays = n
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"configured":    configured,
 		"connected":     token != "",
 		"email":         email,
 		"client_id":     clientID,
 		"masked_secret": maskedSecret,
+		"lookback_days": lookbackDays,
 	})
 }
 
 type saveGmailCredentialsRequest struct {
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
+	LookbackDays int    `json:"lookback_days"`
 }
 
 // SaveCredentials updates Gmail client credentials in the DB.
@@ -131,6 +140,13 @@ func (h *GmailOAuthHandler) SaveCredentials(w http.ResponseWriter, r *http.Reque
 	if clientSecret != "" && !strings.Contains(clientSecret, "•") {
 		if err := h.setSetting(r.Context(), "gmail_client_secret", clientSecret); err != nil {
 			writeError(w, http.StatusInternalServerError, "save client secret: "+err.Error())
+			return
+		}
+	}
+
+	if req.LookbackDays > 0 {
+		if err := h.setSetting(r.Context(), "gmail_lookback_days", strconv.Itoa(req.LookbackDays)); err != nil {
+			writeError(w, http.StatusInternalServerError, "save lookback days: "+err.Error())
 			return
 		}
 	}
@@ -191,8 +207,12 @@ func (h *GmailOAuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("gmail oauth: connected successfully")
 
-	// Redirect back to the frontend settings page.
-	http.Redirect(w, r, h.frontendURL+"/settings?tab=integrations&gmail=connected", http.StatusFound)
+	// Redirect back to the frontend settings page using the request's own host/scheme.
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	http.Redirect(w, r, scheme+"://"+r.Host+"/settings?tab=integrations&gmail=connected", http.StatusFound)
 }
 
 // Disconnect removes the stored Gmail tokens.

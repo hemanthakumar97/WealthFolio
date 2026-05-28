@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,7 +82,7 @@ func (w *GmailWatcher) Run(ctx context.Context) error {
 
 	totalProcessed, totalSkipped, totalErrors := 0, 0, 0
 	for _, rule := range rules {
-		query := w.buildRuleQuery(rule)
+		query := w.buildRuleQuery(ctx, rule)
 		p, sk, er := w.runQuery(ctx, svc, query, func(ctx context.Context, svc *gmail.Service, msgID string) error {
 			return w.processWithRule(ctx, svc, msgID, rule)
 		})
@@ -209,7 +210,7 @@ func (w *GmailWatcher) DryRun(ctx context.Context) ([]DryRunResult, error) {
 
 	var results []DryRunResult
 	for _, rule := range rules {
-		query := w.buildRuleQuery(rule)
+		query := w.buildRuleQuery(ctx, rule)
 		res := DryRunResult{
 			RuleID:   rule.ID,
 			RuleName: rule.Name,
@@ -326,8 +327,13 @@ func (w *GmailWatcher) loadRules(ctx context.Context) ([]EmailWatchRule, error) 
 }
 
 // buildRuleQuery builds the Gmail search query for a rule.
-func (w *GmailWatcher) buildRuleQuery(rule EmailWatchRule) string {
+func (w *GmailWatcher) buildRuleQuery(ctx context.Context, rule EmailWatchRule) string {
 	days := w.cfg.LookbackDays
+	var stored string
+	_ = w.pool.QueryRow(ctx, `SELECT value FROM app_settings WHERE key = 'gmail_lookback_days'`).Scan(&stored)
+	if n, err := strconv.Atoi(stored); err == nil && n > 0 {
+		days = n
+	}
 	if days <= 0 {
 		days = 7
 	}

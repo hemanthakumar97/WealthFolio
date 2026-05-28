@@ -1,18 +1,32 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hemanthakumar97/wealthfolio/internal/services"
 )
 
+type backfillState struct {
+	mu          sync.Mutex
+	running     bool
+	count       int
+	errMsg      string
+	completedAt time.Time
+}
+
 type TrendsHandler struct {
 	pool     *pgxpool.Pool
 	snapshot *services.SnapshotService
+	bf       backfillState
 }
 
 func NewTrendsHandler(pool *pgxpool.Pool, snapshot *services.SnapshotService) *TrendsHandler {
@@ -260,17 +274,62 @@ func (h *TrendsHandler) MonthlyReturns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// Backfill re-creates all historical snapshots.
+// BackfillStatus returns the current state of the backfill job.
+func (h *TrendsHandler) BackfillStatus(w http.ResponseWriter, r *http.Request) {
+	h.bf.mu.Lock()
+	defer h.bf.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"running":          h.bf.running,
+		"snapshots_created": h.bf.count,
+		"error":            h.bf.errMsg,
+		"completed_at":     h.bf.completedAt,
+	})
+}
+
+// Backfill re-creates all historical snapshots in the background.
+// Body (optional JSON): { "rewrite": bool, "instrument_id": int }
+// Poll GET /backfill/status to track progress.
 func (h *TrendsHandler) Backfill(w http.ResponseWriter, r *http.Request) {
-	count, err := h.snapshot.BackfillSnapshots(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	var body struct {
+		Rewrite      bool  `json:"rewrite"`
+		InstrumentID int64 `json:"instrument_id"`
+	}
+	body.Rewrite = true // default: overwrite existing data
+	json.NewDecoder(r.Body).Decode(&body)
+
+	opts := services.BackfillOptions{
+		Rewrite:      body.Rewrite,
+		InstrumentID: body.InstrumentID,
+	}
+
+	h.bf.mu.Lock()
+	if h.bf.running {
+		h.bf.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"status": "already_running"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            "ok",
-		"snapshots_created": count,
-	})
+	h.bf.running = true
+	h.bf.count = 0
+	h.bf.errMsg = ""
+	h.bf.completedAt = time.Time{}
+	h.bf.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{"status": "started"})
+
+	go func() {
+		count, err := h.snapshot.BackfillSnapshots(context.Background(), opts)
+		h.bf.mu.Lock()
+		defer h.bf.mu.Unlock()
+		h.bf.running = false
+		h.bf.count = count
+		h.bf.completedAt = time.Now()
+		if err != nil {
+			h.bf.errMsg = err.Error()
+			slog.Error("backfill failed", "err", err)
+		} else {
+			slog.Info("backfill complete", "snapshots_created", count)
+		}
+	}()
 }
 
 // CreateSnapshot triggers a manual snapshot for today.

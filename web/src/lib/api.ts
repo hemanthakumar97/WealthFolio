@@ -243,10 +243,16 @@ export const trendsApi = {
   },
   benchmark: (symbol: string) =>
     request<any[]>(`/api/trends/benchmark?symbol=${encodeURIComponent(symbol)}`),
-  backfill: () =>
-    request<{ status: string; snapshots_created: number }>('/api/trends/backfill', {
+  backfill: (opts?: { rewrite?: boolean; instrument_id?: number }) =>
+    request<{ status: string }>('/api/trends/backfill', {
       method: 'POST',
+      body: JSON.stringify({ rewrite: opts?.rewrite ?? true, instrument_id: opts?.instrument_id ?? 0 }),
+      headers: { 'Content-Type': 'application/json' },
     }),
+  backfillStatus: () =>
+    request<{ running: boolean; snapshots_created: number; error: string; completed_at: string }>(
+      '/api/trends/backfill/status',
+    ),
 };
 
 export const portfolioApi = {
@@ -732,6 +738,7 @@ export interface GmailStatus {
   email: string;
   client_id: string;
   masked_secret: string;
+  lookback_days: number;
 }
 
 export interface EmailWatchRule {
@@ -763,7 +770,7 @@ export const settingsApi = {
   gmailStatus: () => request<GmailStatus>('/api/settings/gmail'),
   gmailDisconnect: () =>
     request<{ disconnected: boolean }>('/api/settings/gmail', { method: 'DELETE' }),
-  saveGmailConfig: (body: { client_id: string; client_secret: string }) =>
+  saveGmailConfig: (body: { client_id: string; client_secret: string; lookback_days: number }) =>
     request<GmailStatus>('/api/settings/gmail', { method: 'PUT', body: JSON.stringify(body) }),
   listRules: () => request<EmailWatchRule[]>('/api/settings/email-rules'),
   testRun: () => request<DryRunResult[]>('/api/gmail/test', { method: 'POST' }),

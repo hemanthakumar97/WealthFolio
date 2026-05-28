@@ -58,13 +58,38 @@ function DashboardPage() {
     staleTime: 60_000,
   });
 
+  const [backfillRunning, setBackfillRunning] = useState(false);
+
+  useEffect(() => {
+    if (!backfillRunning) return;
+    const id = setInterval(async () => {
+      try {
+        const s = await trendsApi.backfillStatus();
+        if (!s.running) {
+          clearInterval(id);
+          setBackfillRunning(false);
+          if (s.error) {
+            toast.error(`Rebuild failed: ${s.error}`);
+          } else {
+            toast.success(`Rebuilt ${s.snapshots_created} snapshots!`);
+            queryClient.invalidateQueries({ queryKey: ['trends'] });
+          }
+        }
+      } catch {
+        clearInterval(id);
+        setBackfillRunning(false);
+      }
+    }, 5_000);
+    return () => clearInterval(id);
+  }, [backfillRunning, queryClient]);
+
   const backfill = useMutation({
     mutationFn: trendsApi.backfill,
-    onSuccess: (res) => {
-      toast.success(`Successfully created ${res.snapshots_created} snapshots`);
-      queryClient.invalidateQueries({ queryKey: ['trends'] });
+    onSuccess: () => {
+      setBackfillRunning(true);
+      toast.info('Rebuilding history...');
     },
-    onError: () => toast.error('Backfill execution failed'),
+    onError: () => toast.error('Failed to start rebuild'),
   });
 
   const pl = summary?.total_profit_loss ?? 0;
@@ -129,16 +154,16 @@ function DashboardPage() {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => backfill.mutate()}
-          disabled={backfill.isPending}
+          onClick={() => backfill.mutate(undefined)}
+          disabled={backfill.isPending || backfillRunning}
           className="h-9 shrink-0 gap-2 self-start border-border/60 bg-background/50 font-semibold shadow-sm transition-all duration-300 hover:bg-muted/50 hover:shadow active:scale-95 sm:self-auto"
         >
-          {backfill.isPending ? (
+          {backfill.isPending || backfillRunning ? (
             <Loader2 className="size-4 animate-spin text-primary" />
           ) : (
             <RefreshCw className="size-4 text-muted-foreground transition-transform duration-500 hover:rotate-180" />
           )}
-          <span>Rebuild history</span>
+          <span>{backfill.isPending || backfillRunning ? 'Rebuilding...' : 'Rebuild history'}</span>
         </Button>
       </header>
 
@@ -228,7 +253,7 @@ function DashboardPage() {
       </Card>
 
       {/* Allocation breakdown */}
-      {summary && summary.by_asset_type.length > 0 && isMounted && (
+      {summary && (summary.by_asset_type?.length ?? 0) > 0 && isMounted && (
         <div className="grid gap-5 md:grid-cols-2">
           <AllocationDonut title="By asset type" items={summary.by_asset_type} />
           <AllocationDonut title="By platform" items={summary.by_platform} />

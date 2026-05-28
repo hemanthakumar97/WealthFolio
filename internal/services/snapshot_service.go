@@ -76,11 +76,19 @@ func (s *SnapshotService) CreateDailySnapshot(ctx context.Context) (*SnapshotRow
 	}, nil
 }
 
+// BackfillOptions controls how BackfillSnapshots behaves.
+type BackfillOptions struct {
+	// Rewrite overwrites existing snapshot rows. When false, existing rows are left untouched.
+	// Ignored when InstrumentID is set (instrument-specific rewrites always update).
+	Rewrite bool
+	// InstrumentID limits the rewrite to a single instrument and adjusts portfolio totals
+	// by delta rather than recomputing everything. 0 means all instruments.
+	InstrumentID int64
+}
+
 // BackfillSnapshots re-creates one snapshot per day from the earliest transaction date
 // to today, using price forward-fill for days without a direct price record.
-// It is intentionally simple: iterate day by day, compute value from prices available
-// on that day or earlier, insert/replace snapshot.
-func (s *SnapshotService) BackfillSnapshots(ctx context.Context) (int, error) {
+func (s *SnapshotService) BackfillSnapshots(ctx context.Context, opts BackfillOptions) (int, error) {
 	// Find the first transaction date.
 	var firstDateStr *string
 	err := s.pool.QueryRow(ctx,
@@ -98,12 +106,65 @@ func (s *SnapshotService) BackfillSnapshots(ctx context.Context) (int, error) {
 	created := 0
 
 	for d := firstDate; !d.After(today); d = d.AddDate(0, 0, 1) {
-		rows, err := s.computeForDate(ctx, d)
+		rows, err := s.computeForDate(ctx, d, opts.InstrumentID)
 		if err != nil {
 			slog.Warn("backfill: compute for date", "date", d.Format("2006-01-02"), "err", err)
 			continue
 		}
 
+		if opts.InstrumentID != 0 {
+			// Single-instrument mode: upsert only that instrument's snapshot and
+			// adjust the portfolio total by the delta (old value → new value).
+			for _, r := range rows {
+				profitPct := 0.0
+				if r.Invested != 0 {
+					profitPct = ((r.Value - r.Invested) / r.Invested) * 100
+				}
+
+				// Read old values before overwriting so we can compute the delta.
+				var oldInvested, oldValue float64
+				s.pool.QueryRow(ctx,
+					`SELECT COALESCE(invested::float,0), COALESCE(value::float,0)
+					   FROM instrument_snapshots
+					  WHERE snapshot_date=$1 AND instrument_id=$2`,
+					d, r.InstrumentID,
+				).Scan(&oldInvested, &oldValue)
+
+				_, err = s.pool.Exec(ctx, `
+					INSERT INTO instrument_snapshots
+					  (snapshot_date, instrument_id, invested, value, profit, profit_percent)
+					VALUES ($1,$2,$3,$4,$5,$6)
+					ON CONFLICT (snapshot_date, instrument_id) DO UPDATE
+					  SET invested       = EXCLUDED.invested,
+					      value          = EXCLUDED.value,
+					      profit         = EXCLUDED.profit,
+					      profit_percent = EXCLUDED.profit_percent`,
+					d, r.InstrumentID, r.Invested, r.Value, r.Value-r.Invested, profitPct,
+				)
+				if err != nil {
+					slog.Warn("backfill: upsert instrument_snapshot", "date", d.Format("2006-01-02"), "err", err)
+					continue
+				}
+
+				// Adjust portfolio snapshot by delta — only update rows that exist.
+				s.pool.Exec(ctx, `
+					UPDATE portfolio_snapshots
+					SET total_invested    = total_invested    - $2 + $3,
+					    total_value       = total_value       - $4 + $5,
+					    total_profit      = (total_value - $4 + $5) - (total_invested - $2 + $3),
+					    profit_percentage = CASE WHEN (total_invested - $2 + $3) > 0
+					        THEN ((total_value - $4 + $5) - (total_invested - $2 + $3))
+					             / (total_invested - $2 + $3) * 100
+					        ELSE 0 END
+					WHERE snapshot_date = $1`,
+					d, oldInvested, r.Invested, oldValue, r.Value,
+				)
+				created++
+			}
+			continue
+		}
+
+		// Full backfill path.
 		var totalInvested, totalValue float64
 		for _, r := range rows {
 			totalInvested += r.Invested
@@ -115,15 +176,19 @@ func (s *SnapshotService) BackfillSnapshots(ctx context.Context) (int, error) {
 			pct = (profit / totalInvested) * 100
 		}
 
-		_, err = s.pool.Exec(ctx,
-			`INSERT INTO portfolio_snapshots
-			   (snapshot_date, total_invested, total_value, total_profit, profit_percentage)
-			 VALUES ($1,$2,$3,$4,$5)
-			 ON CONFLICT (snapshot_date) DO UPDATE
+		portfolioConflict := `ON CONFLICT (snapshot_date) DO UPDATE
 			   SET total_invested    = EXCLUDED.total_invested,
 			       total_value       = EXCLUDED.total_value,
 			       total_profit      = EXCLUDED.total_profit,
-			       profit_percentage = EXCLUDED.profit_percentage`,
+			       profit_percentage = EXCLUDED.profit_percentage`
+		if !opts.Rewrite {
+			portfolioConflict = `ON CONFLICT (snapshot_date) DO NOTHING`
+		}
+
+		_, err = s.pool.Exec(ctx,
+			`INSERT INTO portfolio_snapshots
+			   (snapshot_date, total_invested, total_value, total_profit, profit_percentage)
+			 VALUES ($1,$2,$3,$4,$5) `+portfolioConflict,
 			d, totalInvested, totalValue, profit, pct,
 		)
 		if err != nil {
@@ -132,7 +197,6 @@ func (s *SnapshotService) BackfillSnapshots(ctx context.Context) (int, error) {
 			created++
 		}
 
-		// Bulk-insert per-instrument snapshots.
 		if len(rows) > 0 {
 			ids := make([]int64, len(rows))
 			invs := make([]float64, len(rows))
@@ -148,14 +212,20 @@ func (s *SnapshotService) BackfillSnapshots(ctx context.Context) (int, error) {
 					pcts[i] = ((r.Value - r.Invested) / r.Invested) * 100
 				}
 			}
-			_, err = s.pool.Exec(ctx, `
-				INSERT INTO instrument_snapshots (snapshot_date, instrument_id, invested, value, profit, profit_percent)
-				SELECT $1, unnest($2::bigint[]), unnest($3::numeric[]), unnest($4::numeric[]), unnest($5::numeric[]), unnest($6::numeric[])
-				ON CONFLICT (snapshot_date, instrument_id) DO UPDATE
+
+			instrumentConflict := `ON CONFLICT (snapshot_date, instrument_id) DO UPDATE
 				  SET invested       = EXCLUDED.invested,
 				      value          = EXCLUDED.value,
 				      profit         = EXCLUDED.profit,
-				      profit_percent = EXCLUDED.profit_percent`,
+				      profit_percent = EXCLUDED.profit_percent`
+			if !opts.Rewrite {
+				instrumentConflict = `ON CONFLICT (snapshot_date, instrument_id) DO NOTHING`
+			}
+
+			_, err = s.pool.Exec(ctx, `
+				INSERT INTO instrument_snapshots (snapshot_date, instrument_id, invested, value, profit, profit_percent)
+				SELECT $1, unnest($2::bigint[]), unnest($3::numeric[]), unnest($4::numeric[]), unnest($5::numeric[]), unnest($6::numeric[])
+				`+instrumentConflict,
 				d, ids, invs, vals, profs, pcts,
 			)
 			if err != nil {
@@ -174,12 +244,13 @@ type instrDay struct {
 
 // computeForDate returns per-instrument (invested, value) as of date,
 // only for instruments that have a price on or before that date.
-func (s *SnapshotService) computeForDate(ctx context.Context, date time.Time) ([]instrDay, error) {
-	usdINR, _ := s.fx.USDToINR(ctx)
-	usdInrFloat, _ := usdINR.Float64()
-	if usdInrFloat == 0 {
-		usdInrFloat = 84.0
+// Pass instrumentID > 0 to limit results to a single instrument.
+func (s *SnapshotService) computeForDate(ctx context.Context, date time.Time, instrumentID int64) ([]instrDay, error) {
+	usdINR, err := s.fx.USDToINR(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: %w", err)
 	}
+	usdInrFloat, _ := usdINR.Float64()
 
 	rows, err := s.pool.Query(ctx, `
 		WITH tx_agg AS (
@@ -209,7 +280,8 @@ func (s *SnapshotService) computeForDate(ctx context.Context, date time.Time) ([
 		INNER JOIN last_price lp ON lp.instrument_id = ta.instrument_id
 		INNER JOIN instruments i ON i.id = ta.instrument_id
 		WHERE (ta.units_bought - ta.units_sold) > 0.000001
-	`, date)
+		  AND ($2 = 0 OR ta.instrument_id = $2)
+	`, date, instrumentID)
 	if err != nil {
 		return nil, err
 	}
@@ -223,6 +295,8 @@ func (s *SnapshotService) computeForDate(ctx context.Context, date time.Time) ([
 			return nil, err
 		}
 		if strings.EqualFold(currency, "USD") {
+			// nav_price is stored in INR already (price_fetcher converts on write).
+			// Only the transaction amount (invested) needs USD→INR conversion.
 			r.Invested *= usdInrFloat
 		}
 		out = append(out, r)

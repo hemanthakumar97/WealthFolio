@@ -36,8 +36,7 @@ func (f *FXService) USDToINR(ctx context.Context) (decimal.Decimal, error) {
 	}
 	rate, err := f.fetchFrankfurter(ctx)
 	if err != nil {
-		// Return a hardcoded fallback so price fetching doesn't break when offline.
-		return decimal.NewFromFloat(84.0), nil
+		return decimal.Zero, fmt.Errorf("fx: failed to fetch USD/INR rate: %w", err)
 	}
 	f.toCache(ctx, rate)
 	return rate, nil

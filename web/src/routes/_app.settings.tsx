@@ -602,6 +602,7 @@ function IntegrationsTab() {
 
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  const [lookbackDays, setLookbackDays] = useState(7);
   const [showSecret, setShowSecret] = useState(false);
   const [saved, setSaved] = useState(false);
   const [synced, setSynced] = useState(false);
@@ -614,6 +615,7 @@ function IntegrationsTab() {
 
   if (!synced && gmailStatus) {
     setClientId(gmailStatus.client_id ?? '');
+    setLookbackDays(gmailStatus.lookback_days ?? 7);
     setSynced(true);
   }
 
@@ -624,7 +626,7 @@ function IntegrationsTab() {
   });
 
   const saveGmail = useMutation({
-    mutationFn: () => api.saveGmailConfig({ client_id: clientId, client_secret: clientSecret }),
+    mutationFn: () => api.saveGmailConfig({ client_id: clientId, client_secret: clientSecret, lookback_days: lookbackDays }),
     onSuccess: (data) => {
       qc.setQueryData(['settings', 'gmail'], data);
       setClientSecret('');
@@ -658,7 +660,8 @@ function IntegrationsTab() {
   const enabledCount = rules.filter((r) => r.enabled).length;
 
   const savedClientId = gmailStatus?.client_id ?? '';
-  const hasChanges = clientId !== savedClientId || clientSecret !== '';
+  const savedLookbackDays = gmailStatus?.lookback_days ?? 7;
+  const hasChanges = clientId !== savedClientId || clientSecret !== '' || lookbackDays !== savedLookbackDays;
   const canSave =
     hasChanges && clientId.trim() !== '' && (clientSecret.trim() !== '' || configured);
 
@@ -755,6 +758,24 @@ function IntegrationsTab() {
                   </button>
                 )}
               </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="gmail-lookback-days" className="text-xs font-bold text-foreground/80">
+                Lookback Days
+              </Label>
+              <Input
+                id="gmail-lookback-days"
+                type="number"
+                min={1}
+                max={90}
+                value={lookbackDays}
+                disabled={masked}
+                onChange={(e) => setLookbackDays(Math.max(1, parseInt(e.target.value) || 7))}
+                className="h-9 rounded-xl border-border/80 bg-card/30 font-mono text-xs"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                How many days back to scan Gmail for broker emails.
+              </p>
             </div>
           </div>
 
