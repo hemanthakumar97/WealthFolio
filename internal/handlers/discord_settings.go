@@ -25,12 +25,26 @@ type discordSettingsResponse struct {
 	Enabled           bool    `json:"enabled"`
 	DrawdownThreshold float64 `json:"drawdown_threshold"`
 	Configured        bool    `json:"configured"`
+	// Additional alert types
+	MoverAlertEnabled bool    `json:"mover_alert_enabled"`
+	MoverThreshold    float64 `json:"mover_threshold"`
+	ATHAlertEnabled   bool    `json:"ath_alert_enabled"`
+	LTCGAlertEnabled  bool    `json:"ltcg_alert_enabled"`
+	LTCGThresholdPct  float64 `json:"ltcg_threshold_pct"`
+	MoodAlertEnabled  bool    `json:"mood_alert_enabled"`
 }
 
 type discordSettingsPutRequest struct {
 	WebhookURL        string  `json:"webhook_url"`
 	Enabled           bool    `json:"enabled"`
 	DrawdownThreshold float64 `json:"drawdown_threshold"`
+	// Additional alert types
+	MoverAlertEnabled bool    `json:"mover_alert_enabled"`
+	MoverThreshold    float64 `json:"mover_threshold"`
+	ATHAlertEnabled   bool    `json:"ath_alert_enabled"`
+	LTCGAlertEnabled  bool    `json:"ltcg_alert_enabled"`
+	LTCGThresholdPct  float64 `json:"ltcg_threshold_pct"`
+	MoodAlertEnabled  bool    `json:"mood_alert_enabled"`
 }
 
 func (h *DiscordSettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +71,12 @@ func (h *DiscordSettingsHandler) Put(w http.ResponseWriter, r *http.Request) {
 		WebhookURL:        req.WebhookURL,
 		Enabled:           req.Enabled,
 		DrawdownThreshold: req.DrawdownThreshold,
+		MoverAlertEnabled: req.MoverAlertEnabled,
+		MoverThreshold:    req.MoverThreshold,
+		ATHAlertEnabled:   req.ATHAlertEnabled,
+		LTCGAlertEnabled:  req.LTCGAlertEnabled,
+		LTCGThresholdPct:  req.LTCGThresholdPct,
+		MoodAlertEnabled:  req.MoodAlertEnabled,
 	}
 	if err := h.svc.SaveSettings(r.Context(), cfg); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -89,10 +109,24 @@ func toDiscordResponse(cfg *services.DiscordSettings) discordSettingsResponse {
 			masked = strings.Repeat("•", len(u))
 		}
 	}
+	mt := cfg.MoverThreshold
+	if mt == 0 {
+		mt = 3.0
+	}
+	lp := cfg.LTCGThresholdPct
+	if lp == 0 {
+		lp = 80.0
+	}
 	return discordSettingsResponse{
 		MaskedURL:         masked,
 		Enabled:           cfg.Enabled,
 		DrawdownThreshold: cfg.DrawdownThreshold,
 		Configured:        cfg.WebhookURL != "",
+		MoverAlertEnabled: cfg.MoverAlertEnabled,
+		MoverThreshold:    mt,
+		ATHAlertEnabled:   cfg.ATHAlertEnabled,
+		LTCGAlertEnabled:  cfg.LTCGAlertEnabled,
+		LTCGThresholdPct:  lp,
+		MoodAlertEnabled:  cfg.MoodAlertEnabled,
 	}
 }

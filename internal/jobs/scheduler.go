@@ -84,16 +84,19 @@ func (sched *Scheduler) Register(snapshotHour, marketMoodHour int, gmailWatcherH
 		return err
 	}
 
-	// Drawdown alert check runs 5 minutes after the daily snapshot.
+	// All Discord alert checks run 5 minutes after the daily snapshot.
 	alertCron := formatCronOffset(snapshotHour, 5)
 	if _, err := sched.s.NewJob(
 		gocron.CronJob(alertCron, false),
 		gocron.NewTask(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
 			discordSvc := services.NewDiscordService(pool)
 			if err := discordSvc.CheckAndSendDrawdownAlerts(ctx); err != nil {
 				slog.Error("drawdown alert job", "err", err)
+			}
+			if err := discordSvc.CheckAllAlerts(ctx); err != nil {
+				slog.Error("discord alert job", "err", err)
 			}
 		}),
 	); err != nil {

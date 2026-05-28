@@ -51,6 +51,11 @@ type StockMetrics struct {
 	Return1YPct   float64 `json:"return_1y_pct"`
 	MaxDrawdown3Y float64 `json:"max_drawdown_3y_pct"`
 
+	// Extended fields — populated by analysis_service (not used in Zero1Score).
+	ROCE             float64 `json:"roce,omitempty"`              // EBITDA / Capital Employed × 100
+	PromoterHolding  float64 `json:"promoter_holding,omitempty"`  // % from Yahoo insiders
+	FreeCashFlowCr   float64 `json:"free_cash_flow_cr,omitempty"` // FCF in ₹ Crores
+
 	// Chart series
 	PriceHistory   []ChartPoint `json:"price_history,omitempty"`
 	DrawdownSeries []ChartPoint `json:"drawdown_series,omitempty"`

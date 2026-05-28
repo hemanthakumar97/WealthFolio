@@ -773,17 +773,70 @@ export interface DiscordSettings {
   enabled: boolean;
   drawdown_threshold: number;
   configured: boolean;
+  mover_alert_enabled: boolean;
+  mover_threshold: number;
+  ath_alert_enabled: boolean;
+  ltcg_alert_enabled: boolean;
+  ltcg_threshold_pct: number;
+  mood_alert_enabled: boolean;
 }
 
 export const discordSettingsApi = {
   get: () => request<DiscordSettings>('/api/settings/discord'),
-  put: (body: { webhook_url?: string; enabled: boolean; drawdown_threshold: number }) =>
+  put: (body: Partial<DiscordSettings> & { webhook_url?: string }) =>
     request<DiscordSettings>('/api/settings/discord', {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
   test: () =>
     request<{ message: string }>('/api/settings/discord/test', { method: 'POST' }),
+};
+
+// --- Stock Analysis ---
+
+export interface StockAnalysis {
+  symbol: string;
+  company_name: string;
+  sector: string;
+  composite_score: number;
+  fundamental_score: number;
+  technical_score: number;
+  recommendation: 'STRONG_BUY' | 'BUY' | 'ACCUMULATE' | 'HOLD' | 'REDUCE' | 'SELL' | 'NOT_ANALYZED';
+  current_price: number;
+  rsi_14: number;
+  macd_histogram: number;
+  sma_50: number;
+  sma_200: number;
+  above_sma_50: boolean;
+  above_sma_200: boolean;
+  golden_cross: boolean;
+  trailing_pe: number;
+  price_to_book: number;
+  roe: number;
+  roce: number;
+  revenue_growth: number;
+  earnings_growth: number;
+  debt_to_equity: number;
+  dividend_yield: number;
+  market_cap_cr: number;
+  week_52_high: number;
+  week_52_low: number;
+  promoter_holding: number;
+  free_cash_flow: number;
+  buy_signals: string[];
+  caution_signals: string[];
+  price_history?: { d: string; v: number }[];
+  analyzed_at: string;
+}
+
+export const analysisApi = {
+  run: (symbol: string) =>
+    request<StockAnalysis>('/api/analysis/run', {
+      method: 'POST',
+      body: JSON.stringify({ symbol }),
+    }),
+  get: (symbol: string) => request<StockAnalysis>(`/api/analysis/${encodeURIComponent(symbol)}`),
+  watchlist: () => request<StockAnalysis[]>('/api/analysis/watchlist'),
 };
 
 export const settingsApi = {
@@ -806,4 +859,13 @@ export const settingsApi = {
     }),
   deleteRule: (id: number) =>
     request<void>(`/api/settings/email-rules/${id}`, { method: 'DELETE' }),
+  addWatchlist: (symbol: string) =>
+    request<void>('/api/portfolio/market/watchlist', {
+      method: 'POST',
+      body: JSON.stringify({ symbol }),
+    }),
+  removeWatchlist: (symbol: string) =>
+    request<void>(`/api/portfolio/market/watchlist/${encodeURIComponent(symbol)}`, {
+      method: 'DELETE',
+    }),
 };

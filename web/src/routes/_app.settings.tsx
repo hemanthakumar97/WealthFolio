@@ -1330,19 +1330,31 @@ function NotificationsTab() {
     queryFn: discordSettingsApi.get,
   });
 
-  const [enabled, setEnabled] = useState(data?.enabled ?? false);
-  const [threshold, setThreshold] = useState(data?.drawdown_threshold ?? 10);
+  const [enabled, setEnabled] = useState(false);
+  const [threshold, setThreshold] = useState(10);
+  const [moverEnabled, setMoverEnabled] = useState(false);
+  const [moverThreshold, setMoverThreshold] = useState(3);
+  const [athEnabled, setAthEnabled] = useState(false);
+  const [ltcgEnabled, setLtcgEnabled] = useState(false);
+  const [ltcgPct, setLtcgPct] = useState(80);
+  const [moodEnabled, setMoodEnabled] = useState(false);
 
   // Sync from server once loaded
   const [synced, setSynced] = useState(false);
   if (data && !synced) {
     setEnabled(data.enabled);
     setThreshold(data.drawdown_threshold);
+    setMoverEnabled(data.mover_alert_enabled ?? false);
+    setMoverThreshold(data.mover_threshold ?? 3);
+    setAthEnabled(data.ath_alert_enabled ?? false);
+    setLtcgEnabled(data.ltcg_alert_enabled ?? false);
+    setLtcgPct(data.ltcg_threshold_pct ?? 80);
+    setMoodEnabled(data.mood_alert_enabled ?? false);
     setSynced(true);
   }
 
   const saveMutation = useMutation({
-    mutationFn: (cfg: { webhook_url?: string; enabled: boolean; drawdown_threshold: number }) =>
+    mutationFn: (cfg: Partial<DiscordSettings> & { webhook_url?: string }) =>
       discordSettingsApi.put(cfg),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['discord-settings'] });
@@ -1355,6 +1367,12 @@ function NotificationsTab() {
       webhook_url: webhookURL || undefined,
       enabled,
       drawdown_threshold: threshold,
+      mover_alert_enabled: moverEnabled,
+      mover_threshold: moverThreshold,
+      ath_alert_enabled: athEnabled,
+      ltcg_alert_enabled: ltcgEnabled,
+      ltcg_threshold_pct: ltcgPct,
+      mood_alert_enabled: moodEnabled,
     });
   };
 
@@ -1485,6 +1503,84 @@ function NotificationsTab() {
                 )}
               />
             </button>
+          </div>
+
+          {/* Additional alert toggles */}
+          <div className="space-y-2 border-t border-border/40 pt-3">
+            <p className="text-xs font-semibold text-muted-foreground">Additional Alert Types</p>
+            {[
+              {
+                label: 'Big daily mover',
+                desc: `Alert when any holding moves more than`,
+                enabled: moverEnabled,
+                setEnabled: setMoverEnabled,
+                threshold: moverThreshold,
+                setThreshold: (v: number) => setMoverThreshold(v),
+                unit: '% in one day',
+                min: 1, max: 20,
+              },
+              {
+                label: 'LTCG tax milestone',
+                desc: 'Alert when unrealised LTCG exceeds',
+                enabled: ltcgEnabled,
+                setEnabled: setLtcgEnabled,
+                threshold: ltcgPct,
+                setThreshold: (v: number) => setLtcgPct(v),
+                unit: '% of ₹1.25L limit',
+                min: 50, max: 100,
+              },
+            ].map((item) => (
+              <div key={item.label} className="flex items-center justify-between rounded-xl border border-border/40 bg-muted/20 px-3 py-2.5">
+                <div className="flex-1 min-w-0 pr-4">
+                  <p className="text-xs font-medium">{item.label}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {item.desc}{' '}
+                    <input
+                      type="number"
+                      min={item.min} max={item.max} step={0.5}
+                      value={item.threshold}
+                      onChange={(e) => {
+                        const v = parseFloat(e.target.value);
+                        if (!isNaN(v)) item.setThreshold(v);
+                      }}
+                      className="w-12 rounded border border-border/60 bg-background px-1 text-xs font-semibold text-foreground"
+                    />
+                    {item.unit}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => item.setEnabled(!item.enabled)}
+                  className={cn(
+                    'relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0',
+                    item.enabled ? 'bg-emerald-500' : 'bg-muted',
+                  )}
+                >
+                  <span className={cn('inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform', item.enabled ? 'translate-x-4' : 'translate-x-0.5')} />
+                </button>
+              </div>
+            ))}
+            {[
+              { label: 'Portfolio all-time high 🏆', desc: 'Celebrate when your portfolio sets a new ATH', enabled: athEnabled, setEnabled: setAthEnabled },
+              { label: 'Market mood extremes 😱🤑', desc: 'Alert on Extreme Fear (buy opportunity) or Extreme Greed (caution)', enabled: moodEnabled, setEnabled: setMoodEnabled },
+            ].map((item) => (
+              <div key={item.label} className="flex items-center justify-between rounded-xl border border-border/40 bg-muted/20 px-3 py-2.5">
+                <div className="flex-1 min-w-0 pr-4">
+                  <p className="text-xs font-medium">{item.label}</p>
+                  <p className="text-xs text-muted-foreground">{item.desc}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => item.setEnabled(!item.enabled)}
+                  className={cn(
+                    'relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0',
+                    item.enabled ? 'bg-emerald-500' : 'bg-muted',
+                  )}
+                >
+                  <span className={cn('inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform', item.enabled ? 'translate-x-4' : 'translate-x-0.5')} />
+                </button>
+              </div>
+            ))}
           </div>
 
           {/* Action buttons */}

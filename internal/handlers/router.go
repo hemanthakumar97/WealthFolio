@@ -66,6 +66,7 @@ func NewRouter(deps Deps) http.Handler {
 	aiSettingsH := NewAISettingsHandler(deps.Pool)
 	aiPromptsH := NewAIPromptsHandler(deps.Pool)
 	discordH := NewDiscordSettingsHandler(deps.Pool)
+	analysisH := NewAnalysisHandler(deps.Pool)
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", healthH.Health)
@@ -193,6 +194,12 @@ func NewRouter(deps Deps) http.Handler {
 				r.Put("/discord", discordH.Put)
 				r.Post("/discord/test", discordH.Test)
 			})
+
+				r.Route("/analysis", func(r chi.Router) {
+					r.Post("/run", analysisH.Run)
+					r.Get("/watchlist", analysisH.Watchlist)
+					r.Get("/{symbol}", analysisH.Get)
+				})
 
 			r.Route("/portfolio/market", func(r chi.Router) {
 				r.Get("/config", marketH.Config)

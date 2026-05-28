@@ -18,6 +18,7 @@ import {
   Sparkles,
   ChevronsLeft,
   ChevronsRight,
+  Zap,
 } from 'lucide-react';
 
 import { ApiError, authApi } from '@/lib/api';
@@ -54,6 +55,7 @@ const navItems = [
   { to: '/trends', label: 'Trends', icon: TrendingUp },
   { to: '/market-mood', label: 'Market Mood', icon: Gauge },
   { to: '/signal', label: 'Signal', icon: Sparkles },
+  { to: '/analysis', label: 'Analyser', icon: Zap },
   { to: '/closed-positions', label: 'Closed', icon: Archive },
   { to: '/backfill', label: 'Backfill', icon: Database },
   { to: '/categories', label: 'Categories', icon: Tags },
