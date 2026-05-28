@@ -22,9 +22,19 @@ import {
   EyeOff,
   Settings,
   AlertCircle,
+  Bell,
+  BellOff,
+  Send,
 } from 'lucide-react';
 
-import { authApi, aiSettingsApi, settingsApi, type AISettings } from '@/lib/api';
+import {
+  authApi,
+  aiSettingsApi,
+  settingsApi,
+  discordSettingsApi,
+  type AISettings,
+  type DiscordSettings,
+} from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -1307,11 +1317,283 @@ function AITab() {
   );
 }
 
+// --- Notifications tab ---
+function NotificationsTab() {
+  const qc = useQueryClient();
+  const [webhookURL, setWebhookURL] = useState('');
+  const [showURL, setShowURL] = useState(false);
+  const [testStatus, setTestStatus] = useState<'idle' | 'sending' | 'ok' | 'err'>('idle');
+  const [testError, setTestError] = useState('');
+
+  const { data, isLoading } = useQuery<DiscordSettings>({
+    queryKey: ['discord-settings'],
+    queryFn: discordSettingsApi.get,
+  });
+
+  const [enabled, setEnabled] = useState(data?.enabled ?? false);
+  const [threshold, setThreshold] = useState(data?.drawdown_threshold ?? 10);
+
+  // Sync from server once loaded
+  const [synced, setSynced] = useState(false);
+  if (data && !synced) {
+    setEnabled(data.enabled);
+    setThreshold(data.drawdown_threshold);
+    setSynced(true);
+  }
+
+  const saveMutation = useMutation({
+    mutationFn: (cfg: { webhook_url?: string; enabled: boolean; drawdown_threshold: number }) =>
+      discordSettingsApi.put(cfg),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['discord-settings'] });
+      setWebhookURL('');
+    },
+  });
+
+  const handleSave = () => {
+    saveMutation.mutate({
+      webhook_url: webhookURL || undefined,
+      enabled,
+      drawdown_threshold: threshold,
+    });
+  };
+
+  const handleTest = async () => {
+    setTestStatus('sending');
+    setTestError('');
+    try {
+      await discordSettingsApi.test();
+      setTestStatus('ok');
+    } catch (e: unknown) {
+      setTestStatus('err');
+      setTestError(e instanceof Error ? e.message : 'Test failed');
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 py-8 text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" />
+        <span className="text-sm">Loading…</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Discord Webhook */}
+      <div className="rounded-2xl border border-border/40 bg-card/40 p-6 backdrop-blur-sm">
+        <div className="mb-5 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="grid h-9 w-9 place-items-center rounded-xl border border-indigo-500/20 bg-indigo-500/10 text-indigo-500">
+              <Bell className="size-4" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold">Discord Webhook</p>
+              <p className="text-xs text-muted-foreground">
+                Send drawdown alerts to a Discord channel.
+              </p>
+            </div>
+          </div>
+          {data?.configured ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+              <CheckCircle2 className="size-3" /> Connected
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-muted/60 bg-muted/30 px-2.5 py-1 text-xs font-medium text-muted-foreground">
+              <XCircle className="size-3" /> Not configured
+            </span>
+          )}
+        </div>
+
+        <div className="space-y-4">
+          {/* Webhook URL */}
+          <div className="space-y-1.5">
+            <Label className="text-xs font-medium">
+              Webhook URL{data?.configured && ' (leave blank to keep existing)'}
+            </Label>
+            <div className="relative">
+              <Input
+                type={showURL ? 'text' : 'password'}
+                placeholder={
+                  data?.configured
+                    ? data.masked_url
+                    : 'https://discord.com/api/webhooks/...'
+                }
+                value={webhookURL}
+                onChange={(e) => setWebhookURL(e.target.value)}
+                className="pr-10 font-mono text-xs"
+              />
+              <button
+                type="button"
+                onClick={() => setShowURL((v) => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                {showURL ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Drawdown threshold */}
+          <div className="space-y-1.5">
+            <Label className="text-xs font-medium">Drawdown Alert Threshold (%)</Label>
+            <div className="flex items-center gap-3">
+              <Input
+                type="number"
+                min={1}
+                max={50}
+                step={0.5}
+                value={threshold}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!isNaN(v) && v >= 1 && v <= 50) setThreshold(v);
+                }}
+                className="w-28 text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                Alert when any fund or the total portfolio falls{' '}
+                <span className="font-semibold text-foreground">-{threshold}%</span> from its
+                all-time peak.
+              </p>
+            </div>
+          </div>
+
+          {/* Enable toggle */}
+          <div className="flex items-center justify-between rounded-xl border border-border/40 bg-muted/30 px-4 py-3">
+            <div className="flex items-center gap-2">
+              {enabled ? (
+                <Bell className="size-4 text-emerald-500" />
+              ) : (
+                <BellOff className="size-4 text-muted-foreground" />
+              )}
+              <span className="text-sm font-medium">
+                Alerts {enabled ? 'enabled' : 'disabled'}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setEnabled((v) => !v)}
+              className={cn(
+                'relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus-visible:outline-none',
+                enabled ? 'bg-emerald-500' : 'bg-muted',
+              )}
+            >
+              <span
+                className={cn(
+                  'inline-block h-4 w-4 rounded-full bg-white shadow transition-transform',
+                  enabled ? 'translate-x-6' : 'translate-x-1',
+                )}
+              />
+            </button>
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex flex-wrap gap-2 pt-1">
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={saveMutation.isPending}
+              className="gap-1.5"
+            >
+              {saveMutation.isPending ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Save className="size-3.5" />
+              )}
+              Save
+            </Button>
+            {data?.configured && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleTest}
+                disabled={testStatus === 'sending'}
+                className="gap-1.5"
+              >
+                {testStatus === 'sending' ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Send className="size-3.5" />
+                )}
+                Send Test Message
+              </Button>
+            )}
+          </div>
+
+          {/* Feedback */}
+          {saveMutation.isSuccess && (
+            <p className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+              <CheckCircle2 className="size-3.5" /> Settings saved.
+            </p>
+          )}
+          {saveMutation.isError && (
+            <p className="flex items-center gap-1.5 text-xs text-destructive">
+              <AlertCircle className="size-3.5" />
+              {saveMutation.error instanceof Error
+                ? saveMutation.error.message
+                : 'Save failed'}
+            </p>
+          )}
+          {testStatus === 'ok' && (
+            <p className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+              <CheckCircle2 className="size-3.5" /> Test message sent to Discord.
+            </p>
+          )}
+          {testStatus === 'err' && (
+            <p className="flex items-center gap-1.5 text-xs text-destructive">
+              <AlertCircle className="size-3.5" /> {testError}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Info box */}
+      <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4 text-xs text-muted-foreground">
+        <p className="mb-2 font-semibold text-foreground">How drawdown alerts work</p>
+        <ul className="space-y-1.5 pl-1">
+          <li className="flex items-start gap-2">
+            <span className="select-none font-black text-primary">•</span>
+            <span>
+              Every evening after the daily snapshot, each fund's current value is compared to its
+              all-time peak recorded in portfolio snapshots.
+            </span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="select-none font-black text-primary">•</span>
+            <span>
+              A Discord alert fires when the drawdown reaches your threshold or worsens by another
+              1% after a prior alert.
+            </span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="select-none font-black text-primary">•</span>
+            <span>
+              The alert state resets automatically once a fund recovers above the threshold.
+            </span>
+          </li>
+          <li className="flex items-start gap-2">
+            <span className="select-none font-black text-primary">•</span>
+            <span>
+              Both individual funds and the total portfolio are monitored independently.
+            </span>
+          </li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 // --- Page ---
 function SettingsPage() {
   const search = useSearch({ strict: false }) as { tab?: string };
   const defaultTab =
-    search?.tab === 'integrations' ? 'integrations' : search?.tab === 'ai' ? 'ai' : 'profile';
+    search?.tab === 'integrations'
+      ? 'integrations'
+      : search?.tab === 'ai'
+        ? 'ai'
+        : search?.tab === 'notifications'
+          ? 'notifications'
+          : 'profile';
 
   return (
     <div className="space-y-8">
@@ -1357,6 +1639,12 @@ function SettingsPage() {
           >
             <Sparkles className="size-3.5" /> AI Intelligence
           </TabsTrigger>
+          <TabsTrigger
+            value="notifications"
+            className="gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition-all data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+          >
+            <Bell className="size-3.5" /> Notifications
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="profile" className="mt-0 focus-visible:outline-none">
           <ProfileTab />
@@ -1369,6 +1657,9 @@ function SettingsPage() {
         </TabsContent>
         <TabsContent value="ai" className="mt-0 focus-visible:outline-none">
           <AITab />
+        </TabsContent>
+        <TabsContent value="notifications" className="mt-0 focus-visible:outline-none">
+          <NotificationsTab />
         </TabsContent>
       </Tabs>
     </div>

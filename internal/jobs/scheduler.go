@@ -84,6 +84,22 @@ func (sched *Scheduler) Register(snapshotHour, marketMoodHour int, gmailWatcherH
 		return err
 	}
 
+	// Drawdown alert check runs 5 minutes after the daily snapshot.
+	alertCron := formatCronOffset(snapshotHour, 5)
+	if _, err := sched.s.NewJob(
+		gocron.CronJob(alertCron, false),
+		gocron.NewTask(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			discordSvc := services.NewDiscordService(pool)
+			if err := discordSvc.CheckAndSendDrawdownAlerts(ctx); err != nil {
+				slog.Error("drawdown alert job", "err", err)
+			}
+		}),
+	); err != nil {
+		return err
+	}
+
 	// Market mood sync — runs daily at configurable hour (default 19:00 IST).
 	moodCron := formatCron(marketMoodHour)
 	if _, err := sched.s.NewJob(
@@ -145,4 +161,15 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return s
+}
+
+// formatCronOffset returns a cron expression `offsetMinutes` minutes after the given hour.
+func formatCronOffset(hour, offsetMinutes int) string {
+	if hour < 0 || hour > 23 {
+		hour = 23
+	}
+	minute := offsetMinutes % 60
+	extraHour := offsetMinutes / 60
+	h := (hour + extraHour) % 24
+	return itoa(minute) + " " + itoa(h) + " * * *"
 }

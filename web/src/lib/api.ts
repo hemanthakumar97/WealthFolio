@@ -766,6 +766,26 @@ export interface DryRunResult {
   }>;
 }
 
+// --- Discord alert settings ---
+
+export interface DiscordSettings {
+  masked_url: string;
+  enabled: boolean;
+  drawdown_threshold: number;
+  configured: boolean;
+}
+
+export const discordSettingsApi = {
+  get: () => request<DiscordSettings>('/api/settings/discord'),
+  put: (body: { webhook_url?: string; enabled: boolean; drawdown_threshold: number }) =>
+    request<DiscordSettings>('/api/settings/discord', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  test: () =>
+    request<{ message: string }>('/api/settings/discord/test', { method: 'POST' }),
+};
+
 export const settingsApi = {
   gmailStatus: () => request<GmailStatus>('/api/settings/gmail'),
   gmailDisconnect: () =>
