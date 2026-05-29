@@ -63,7 +63,7 @@ type yahooETFSummaryResp struct {
 			} `json:"price"`
 		} `json:"result"`
 		Error *struct{ Code string } `json:"error"`
-	} `json:"finance"`
+	} `json:"quoteSummary"`
 }
 
 // knownETFData stores Beta/AUM/TER for popular Indian ETFs and US ETFs.

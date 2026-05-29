@@ -823,6 +823,8 @@ export interface StockAnalysis {
   week_52_low: number;
   promoter_holding: number;
   free_cash_flow: number;
+  avg_volume_30d: number;
+  avg_turnover_30d: number;
   buy_signals: string[];
   caution_signals: string[];
   price_history?: { d: string; v: number }[];

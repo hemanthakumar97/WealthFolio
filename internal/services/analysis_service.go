@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -51,6 +52,10 @@ type FullAnalysis struct {
 	PromoterHolding  float64 `json:"promoter_holding"` // % — approx from Yahoo insiders
 	FreeCashFlow     float64 `json:"free_cash_flow"`   // in crores
 
+	// Liquidity
+	AvgVolume30D    float64 `json:"avg_volume_30d"`   // 30-day avg daily volume
+	AvgTurnover30D  float64 `json:"avg_turnover_30d"` // avg daily turnover in crores
+
 	// Signals
 	BuySignals     []string `json:"buy_signals"`
 	CautionSignals []string `json:"caution_signals"`
@@ -80,19 +85,20 @@ func (s *AnalysisService) Analyze(ctx context.Context, symbol string) (*FullAnal
 
 	client := &http.Client{Timeout: 20 * time.Second}
 
-	// 1. Fetch price history from Yahoo chart API.
-	navs, err := fetchYahooPrices(ctx, client, symbol)
+	// 1. Fetch price history (close + volume) from Yahoo chart API.
+	navs, pts, err := fetchYahooPricesFull(ctx, client, symbol)
 	if err != nil {
 		return nil, fmt.Errorf("fetch prices for %s: %w", symbol, err)
 	}
 
-	// 2. Compute technical indicators.
+	// 2. Compute technical indicators and liquidity.
 	tech := ComputeTechnicals(navs)
+	avgVol30D, avgTurnover30DCr := computeLiquidity(pts)
 
 	// 3. Fetch fundamentals from Yahoo quoteSummary.
 	fund, err := fetchYahooFundamentals(ctx, client, symbol)
 	if err != nil {
-		// Non-fatal: proceed with zero fundamental data.
+		slog.Error("yahoo fundamentals fetch failed", "symbol", symbol, "err", err)
 		fund = &StockMetrics{Symbol: symbol}
 	}
 	if len(navs) > 10 {
@@ -112,8 +118,9 @@ func (s *AnalysisService) Analyze(ctx context.Context, symbol string) (*FullAnal
 	// 5. Derive recommendation label.
 	rec := scoreToRecommendation(compositeInt)
 
-	// 6. Build signal narratives.
+	// 6. Build signal narratives (including liquidity).
 	buys, cautions := buildSignals(fund, tech)
+	buys, cautions = appendLiquiditySignals(buys, cautions, avgVol30D, avgTurnover30DCr)
 
 	// 7. Sample price history for chart (260 points max).
 	var history []ChartPoint
@@ -154,6 +161,9 @@ func (s *AnalysisService) Analyze(ctx context.Context, symbol string) (*FullAnal
 		PromoterHolding: fund.PromoterHolding,
 		FreeCashFlow:    fund.FreeCashFlowCr,
 
+		AvgVolume30D:   avgVol30D,
+		AvgTurnover30D: avgTurnover30DCr,
+
 		BuySignals:     buys,
 		CautionSignals: cautions,
 		PriceHistory:   history,
@@ -161,8 +171,7 @@ func (s *AnalysisService) Analyze(ctx context.Context, symbol string) (*FullAnal
 	}
 
 	if err := s.persist(ctx, fa, fund); err != nil {
-		// Log but don't fail — return data to caller.
-		_ = err
+		slog.Error("analysis persist failed", "symbol", symbol, "err", err)
 	}
 
 	return fa, nil
@@ -175,8 +184,9 @@ func (s *AnalysisService) GetLatest(ctx context.Context, symbol string) (*FullAn
 		SELECT company_name, sector, composite_score, fundamental_score, technical_score,
 		       recommendation, current_price, rsi_14, macd_histogram, sma_50, sma_200,
 		       above_sma_50, above_sma_200, golden_cross,
-		       trailing_pe, price_to_book, roe, revenue_growth, earnings_growth,
+		       trailing_pe, price_to_book, roe, roce, revenue_growth, earnings_growth,
 		       debt_to_equity, dividend_yield, market_cap_cr, week_52_high, week_52_low,
+		       promoter_holding, free_cash_flow, avg_volume_30d, avg_turnover_30d,
 		       buy_signals, caution_signals, analyzed_at
 		FROM stock_analysis
 		WHERE symbol = $1
@@ -191,8 +201,9 @@ func (s *AnalysisService) GetLatest(ctx context.Context, symbol string) (*FullAn
 		&fa.CompanyName, &fa.Sector, &fa.CompositeScore, &fa.FundamentalScore, &fa.TechnicalScore,
 		&fa.Recommendation, &fa.CurrentPrice, &fa.RSI14, &fa.MACDHisto, &fa.SMA50, &fa.SMA200,
 		&fa.AboveSMA50, &fa.AboveSMA200, &fa.GoldenCross,
-		&fa.TrailingPE, &fa.PriceToBook, &fa.ROE, &fa.RevenueGrowth, &fa.EarningsGrowth,
+		&fa.TrailingPE, &fa.PriceToBook, &fa.ROE, &fa.ROCE, &fa.RevenueGrowth, &fa.EarningsGrowth,
 		&fa.DebtToEquity, &fa.DividendYield, &fa.MarketCapCr, &fa.Week52High, &fa.Week52Low,
+		&fa.PromoterHolding, &fa.FreeCashFlow, &fa.AvgVolume30D, &fa.AvgTurnover30D,
 		&buyStr, &cauStr, &fa.AnalyzedAt,
 	)
 	if err != nil {
@@ -223,7 +234,7 @@ func (s *AnalysisService) GetWatchlistAnalyses(ctx context.Context) ([]*FullAnal
 	}
 	rows.Close()
 
-	var result []*FullAnalysis
+	result := make([]*FullAnalysis, 0, len(symbols))
 	for _, sym := range symbols {
 		fa, err := s.GetLatest(ctx, sym)
 		if err != nil {
@@ -248,12 +259,13 @@ func (s *AnalysisService) persist(ctx context.Context, fa *FullAnalysis, fund *S
 			composite_score, fundamental_score, technical_score, recommendation,
 			rsi_14, macd_histogram, sma_50, sma_200, current_price,
 			above_sma_50, above_sma_200, golden_cross,
-			trailing_pe, price_to_book, roe, revenue_growth, earnings_growth,
+			trailing_pe, price_to_book, roe, roce, revenue_growth, earnings_growth,
 			debt_to_equity, dividend_yield, market_cap_cr, week_52_high, week_52_low,
+			promoter_holding, free_cash_flow, avg_volume_30d, avg_turnover_30d,
 			buy_signals, caution_signals, metrics_json, analyzed_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,NOW()
+			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NOW()
 		)
 		ON CONFLICT (symbol, analysis_date) DO UPDATE SET
 			company_name=EXCLUDED.company_name, sector=EXCLUDED.sector,
@@ -264,10 +276,13 @@ func (s *AnalysisService) persist(ctx context.Context, fa *FullAnalysis, fund *S
 			above_sma_50=EXCLUDED.above_sma_50, above_sma_200=EXCLUDED.above_sma_200,
 			golden_cross=EXCLUDED.golden_cross,
 			trailing_pe=EXCLUDED.trailing_pe, price_to_book=EXCLUDED.price_to_book,
-			roe=EXCLUDED.roe, revenue_growth=EXCLUDED.revenue_growth,
+			roe=EXCLUDED.roe, roce=EXCLUDED.roce,
+			revenue_growth=EXCLUDED.revenue_growth,
 			earnings_growth=EXCLUDED.earnings_growth, debt_to_equity=EXCLUDED.debt_to_equity,
 			dividend_yield=EXCLUDED.dividend_yield, market_cap_cr=EXCLUDED.market_cap_cr,
 			week_52_high=EXCLUDED.week_52_high, week_52_low=EXCLUDED.week_52_low,
+			promoter_holding=EXCLUDED.promoter_holding, free_cash_flow=EXCLUDED.free_cash_flow,
+			avg_volume_30d=EXCLUDED.avg_volume_30d, avg_turnover_30d=EXCLUDED.avg_turnover_30d,
 			buy_signals=EXCLUDED.buy_signals, caution_signals=EXCLUDED.caution_signals,
 			metrics_json=EXCLUDED.metrics_json, analyzed_at=NOW()
 	`,
@@ -275,8 +290,9 @@ func (s *AnalysisService) persist(ctx context.Context, fa *FullAnalysis, fund *S
 		fa.CompositeScore, fa.FundamentalScore, fa.TechnicalScore, fa.Recommendation,
 		fa.RSI14, fa.MACDHisto, fa.SMA50, fa.SMA200, fa.CurrentPrice,
 		fa.AboveSMA50, fa.AboveSMA200, fa.GoldenCross,
-		fa.TrailingPE, fa.PriceToBook, fa.ROE, fa.RevenueGrowth, fa.EarningsGrowth,
+		fa.TrailingPE, fa.PriceToBook, fa.ROE, fa.ROCE, fa.RevenueGrowth, fa.EarningsGrowth,
 		fa.DebtToEquity, fa.DividendYield, fa.MarketCapCr, fa.Week52High, fa.Week52Low,
+		fa.PromoterHolding, fa.FreeCashFlow, fa.AvgVolume30D, fa.AvgTurnover30D,
 		buyStr, cauStr, metricsJSON,
 	)
 	return err
@@ -290,7 +306,8 @@ type yahooPriceChartResp struct {
 			Timestamp  []int64 `json:"timestamp"`
 			Indicators struct {
 				Quote []struct {
-					Close []float64 `json:"close"`
+					Close  []float64 `json:"close"`
+					Volume []float64 `json:"volume"`
 				} `json:"quote"`
 			} `json:"indicators"`
 		} `json:"result"`
@@ -298,8 +315,20 @@ type yahooPriceChartResp struct {
 	} `json:"chart"`
 }
 
+type pricePoint struct {
+	Date   time.Time
+	Close  float64
+	Volume float64
+}
+
 // fetchYahooPrices fetches 2-year daily close prices from Yahoo Finance chart API.
 func fetchYahooPrices(ctx context.Context, client *http.Client, symbol string) ([]navPoint, error) {
+	navs, _, err := fetchYahooPricesFull(ctx, client, symbol)
+	return navs, err
+}
+
+// fetchYahooPricesFull fetches close prices + volume from Yahoo chart API.
+func fetchYahooPricesFull(ctx context.Context, client *http.Client, symbol string) ([]navPoint, []pricePoint, error) {
 	u := fmt.Sprintf(
 		"https://query1.finance.yahoo.com/v8/finance/chart/%s?range=2y&interval=1d",
 		url.PathEscape(symbol),
@@ -310,42 +339,70 @@ func fetchYahooPrices(ctx context.Context, client *http.Client, symbol string) (
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("yahoo chart API: HTTP %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("yahoo chart API: HTTP %d", resp.StatusCode)
 	}
 
 	body, _ := io.ReadAll(resp.Body)
 	var cr yahooPriceChartResp
 	if err := json.Unmarshal(body, &cr); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if cr.Chart.Error != nil {
-		return nil, fmt.Errorf("yahoo chart: %s", cr.Chart.Error.Code)
+		return nil, nil, fmt.Errorf("yahoo chart: %s", cr.Chart.Error.Code)
 	}
 	if len(cr.Chart.Result) == 0 || len(cr.Chart.Result[0].Indicators.Quote) == 0 {
-		return nil, fmt.Errorf("no chart data for %s", symbol)
+		return nil, nil, fmt.Errorf("no chart data for %s", symbol)
 	}
 
 	res := cr.Chart.Result[0]
-	closes := res.Indicators.Quote[0].Close
+	q := res.Indicators.Quote[0]
+	closes := q.Close
+	volumes := q.Volume
+
 	var navs []navPoint
+	var pts []pricePoint
 	for i, ts := range res.Timestamp {
-		if i >= len(closes) || closes[i] == 0 {
+		if i >= len(closes) || closes[i] == 0 || math.IsNaN(closes[i]) {
 			continue
 		}
-		if math.IsNaN(closes[i]) {
-			continue
+		t := time.Unix(ts, 0).UTC()
+		navs = append(navs, navPoint{Date: t, NAV: closes[i]})
+		vol := 0.0
+		if i < len(volumes) && !math.IsNaN(volumes[i]) {
+			vol = volumes[i]
 		}
-		navs = append(navs, navPoint{
-			Date: time.Unix(ts, 0).UTC(),
-			NAV:  closes[i],
-		})
+		pts = append(pts, pricePoint{Date: t, Close: closes[i], Volume: vol})
 	}
 	sortNavPoints(navs)
-	return navs, nil
+	return navs, pts, nil
+}
+
+// computeLiquidity returns 30-day avg daily volume and avg turnover (in crores).
+func computeLiquidity(pts []pricePoint) (avgVol30D, avgTurnover30DCr float64) {
+	if len(pts) == 0 {
+		return 0, 0
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -30)
+	var totalVol, totalTurnover float64
+	var count int
+	for _, p := range pts {
+		if p.Date.Before(cutoff) {
+			continue
+		}
+		totalVol += p.Volume
+		totalTurnover += p.Volume * p.Close
+		count++
+	}
+	if count == 0 {
+		return 0, 0
+	}
+	avgVol30D = totalVol / float64(count)
+	avgTurnover30DCr = totalTurnover / float64(count) / 1e7
+	return roundF(avgVol30D, 0), roundF(avgTurnover30DCr, 2)
 }
 
 // yahooExtendedResp extends the basic quoteSummary response with extra modules.
@@ -398,7 +455,7 @@ type yahooExtendedResp struct {
 			} `json:"balanceSheetHistory"`
 		} `json:"result"`
 		Error *struct{ Code string } `json:"error"`
-	} `json:"finance"`
+	} `json:"quoteSummary"`
 }
 
 // fetchYahooFundamentals re-uses the existing Yahoo quoteSummary fetcher.
@@ -435,10 +492,10 @@ func fetchYahooFundamentals(ctx context.Context, client *http.Client, symbol str
 	body, _ := io.ReadAll(resp.Body)
 	var qs yahooExtendedResp
 	if err := json.Unmarshal(body, &qs); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshal: %w; body: %s", err, truncate(string(body), 500))
 	}
 	if qs.Finance.Error != nil || len(qs.Finance.Result) == 0 {
-		return nil, fmt.Errorf("no quoteSummary result for %s", symbol)
+		return nil, fmt.Errorf("no quoteSummary result for %s; body: %s", symbol, truncate(string(body), 500))
 	}
 	r := qs.Finance.Result[0]
 
@@ -472,15 +529,95 @@ func fetchYahooFundamentals(ctx context.Context, client *http.Client, symbol str
 	// Extended fields used only by FullAnalysis (not in Zero1Score).
 	sm.PromoterHolding = roundF(r.DefaultKeyStatistics.HeldPercentInsiders.Raw*100, 1)
 	sm.FreeCashFlowCr = roundF(r.FinancialData.FreeCashflow.Raw/1e7, 1)
-	if len(r.BalanceSheetHistory.BalanceSheetStatements) > 0 {
-		bs := r.BalanceSheetHistory.BalanceSheetStatements[0]
-		ce := bs.TotalAssets.Raw - bs.TotalCurrentLiabilities.Raw
-		if ce > 0 && r.FinancialData.Ebitda.Raw > 0 {
-			sm.ROCE = roundF(r.FinancialData.Ebitda.Raw/ce*100, 1)
+
+	// ROCE: Yahoo's balanceSheetHistory module no longer returns asset data,
+	// so use the fundamentals-timeseries endpoint as a fallback.
+	if r.FinancialData.Ebitda.Raw > 0 {
+		if totalAssets, currentLiab, ok := fetchYahooBalanceSheet(ctx, client, symbol, crumb, cookies); ok {
+			ce := totalAssets - currentLiab
+			if ce > 0 {
+				sm.ROCE = roundF(r.FinancialData.Ebitda.Raw/ce*100, 1)
+			}
 		}
 	}
 
 	return sm, nil
+}
+
+// appendLiquiditySignals adds buy/caution signals based on 30-day average volume and turnover.
+// Thresholds (loose — tighten as needed):
+//   - Turnover < ₹1 Cr/day  → illiquid warning
+//   - Turnover ₹1–5 Cr/day  → low liquidity note
+//   - Turnover > ₹50 Cr/day → high liquidity buy signal
+func appendLiquiditySignals(buys, cautions []string, avgVol, avgTurnoverCr float64) ([]string, []string) {
+	if avgVol <= 0 {
+		return buys, cautions
+	}
+	switch {
+	case avgTurnoverCr < 1:
+		cautions = append(cautions, fmt.Sprintf("Very low liquidity — avg daily turnover ₹%.2f Cr (%.0f shares/day)", avgTurnoverCr, avgVol))
+	case avgTurnoverCr < 5:
+		cautions = append(cautions, fmt.Sprintf("Low liquidity — avg daily turnover ₹%.1f Cr (%.0f shares/day)", avgTurnoverCr, avgVol))
+	case avgTurnoverCr > 50:
+		buys = append(buys, fmt.Sprintf("Highly liquid — avg daily turnover ₹%.0f Cr (%.0f shares/day)", avgTurnoverCr, avgVol))
+	}
+	return buys, cautions
+}
+
+// fetchYahooBalanceSheet pulls latest annualTotalAssets + annualCurrentLiabilities
+// from Yahoo's fundamentals-timeseries endpoint (balanceSheetHistory module is broken).
+func fetchYahooBalanceSheet(ctx context.Context, client *http.Client, symbol, crumb string, cookies []*http.Cookie) (totalAssets, currentLiab float64, ok bool) {
+	tsURL := fmt.Sprintf(
+		"https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/%s"+
+			"?symbol=%s&type=annualTotalAssets,annualCurrentLiabilities&period1=1577836800&period2=%d&crumb=%s",
+		url.PathEscape(symbol), url.QueryEscape(symbol),
+		time.Now().Unix(), url.QueryEscape(crumb),
+	)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, tsURL, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return 0, 0, false
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	var ts struct {
+		Timeseries struct {
+			Result []struct {
+				Meta struct {
+					Type []string `json:"type"`
+				} `json:"meta"`
+				AnnualTotalAssets        []*struct{ ReportedValue yahooFloat `json:"reportedValue"` } `json:"annualTotalAssets"`
+				AnnualCurrentLiabilities []*struct{ ReportedValue yahooFloat `json:"reportedValue"` } `json:"annualCurrentLiabilities"`
+			} `json:"result"`
+		} `json:"timeseries"`
+	}
+	if err := json.Unmarshal(body, &ts); err != nil {
+		return 0, 0, false
+	}
+
+	for _, r := range ts.Timeseries.Result {
+		if len(r.AnnualTotalAssets) > 0 {
+			last := r.AnnualTotalAssets[len(r.AnnualTotalAssets)-1]
+			if last != nil {
+				totalAssets = last.ReportedValue.Raw
+			}
+		}
+		if len(r.AnnualCurrentLiabilities) > 0 {
+			last := r.AnnualCurrentLiabilities[len(r.AnnualCurrentLiabilities)-1]
+			if last != nil {
+				currentLiab = last.ReportedValue.Raw
+			}
+		}
+	}
+	return totalAssets, currentLiab, totalAssets > 0 && currentLiab > 0
 }
 
 // ─── Signal narrative builder ─────────────────────────────────────────────────

@@ -23,6 +23,7 @@ CREATE TABLE stock_analysis (
     trailing_pe      NUMERIC(8,2)  NOT NULL DEFAULT 0,
     price_to_book    NUMERIC(8,2)  NOT NULL DEFAULT 0,
     roe              NUMERIC(8,2)  NOT NULL DEFAULT 0,
+    roce             NUMERIC(8,2)  NOT NULL DEFAULT 0,
     revenue_growth   NUMERIC(8,2)  NOT NULL DEFAULT 0,
     earnings_growth  NUMERIC(8,2)  NOT NULL DEFAULT 0,
     debt_to_equity   NUMERIC(8,2)  NOT NULL DEFAULT 0,
@@ -30,6 +31,10 @@ CREATE TABLE stock_analysis (
     market_cap_cr    NUMERIC(14,2) NOT NULL DEFAULT 0,
     week_52_high     NUMERIC(14,2) NOT NULL DEFAULT 0,
     week_52_low      NUMERIC(14,2) NOT NULL DEFAULT 0,
+    promoter_holding NUMERIC(8,2)  NOT NULL DEFAULT 0,
+    free_cash_flow   NUMERIC(14,2) NOT NULL DEFAULT 0,
+    avg_volume_30d   NUMERIC(18,0) NOT NULL DEFAULT 0,
+    avg_turnover_30d NUMERIC(14,2) NOT NULL DEFAULT 0,
     -- Signal narratives (pipe-separated lists)
     buy_signals      TEXT          NOT NULL DEFAULT '',
     caution_signals  TEXT          NOT NULL DEFAULT '',

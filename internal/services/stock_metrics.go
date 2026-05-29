@@ -121,7 +121,7 @@ type yahooQuoteSummaryResp struct {
 			} `json:"assetProfile"`
 		} `json:"result"`
 		Error *struct{ Code string } `json:"error"`
-	} `json:"finance"`
+	} `json:"quoteSummary"`
 }
 
 // yahooFloat handles Yahoo's {raw, fmt} number objects.
@@ -559,8 +559,9 @@ func sectorMedianPE(sector string) float64 {
 
 // fetchYahooCrumb obtains the crumb token required for Yahoo Finance v10 API calls.
 func fetchYahooCrumb(client *http.Client) (string, []*http.Cookie, error) {
-	// Step 1: Visit finance.yahoo.com to receive the session cookie.
-	req1, _ := http.NewRequest(http.MethodGet, "https://finance.yahoo.com/", nil)
+	// Step 1: Visit fc.yahoo.com to receive the session cookie.
+	// (finance.yahoo.com no longer sets the consent cookies needed for the crumb endpoint.)
+	req1, _ := http.NewRequest(http.MethodGet, "https://fc.yahoo.com", nil)
 	req1.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
 	resp1, err := client.Do(req1)
 	if err != nil {
