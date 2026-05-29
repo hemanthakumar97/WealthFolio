@@ -53,8 +53,11 @@ type FullAnalysis struct {
 	FreeCashFlow     float64 `json:"free_cash_flow"`   // in crores
 
 	// Liquidity
-	AvgVolume30D    float64 `json:"avg_volume_30d"`   // 30-day avg daily volume
-	AvgTurnover30D  float64 `json:"avg_turnover_30d"` // avg daily turnover in crores
+	AvgVolume30D    float64 `json:"avg_volume_30d"`    // 30-day avg daily volume
+	AvgTurnover30D  float64 `json:"avg_turnover_30d"`  // avg daily turnover in crores
+	ZeroVolumePct   float64 `json:"zero_volume_pct"`   // % of days with 0 volume (last 30)
+	VolumeCV        float64 `json:"volume_cv"`         // coefficient of variation — erraticism
+	VolumePattern   string  `json:"volume_pattern"`    // AI-generated pattern description
 
 	// Signals
 	BuySignals     []string `json:"buy_signals"`
@@ -91,9 +94,9 @@ func (s *AnalysisService) Analyze(ctx context.Context, symbol string) (*FullAnal
 		return nil, fmt.Errorf("fetch prices for %s: %w", symbol, err)
 	}
 
-	// 2. Compute technical indicators and liquidity.
+	// 2. Compute technical indicators and liquidity stats.
 	tech := ComputeTechnicals(navs)
-	avgVol30D, avgTurnover30DCr := computeLiquidity(pts)
+	ls := computeLiquidity(pts)
 
 	// 3. Fetch fundamentals from Yahoo quoteSummary.
 	fund, err := fetchYahooFundamentals(ctx, client, symbol)
@@ -118,9 +121,10 @@ func (s *AnalysisService) Analyze(ctx context.Context, symbol string) (*FullAnal
 	// 5. Derive recommendation label.
 	rec := scoreToRecommendation(compositeInt)
 
-	// 6. Build signal narratives (including liquidity).
+	// 6. Build signal narratives (including liquidity and AI volume pattern).
 	buys, cautions := buildSignals(fund, tech)
-	buys, cautions = appendLiquiditySignals(buys, cautions, avgVol30D, avgTurnover30DCr)
+	buys, cautions = appendLiquiditySignals(buys, cautions, ls)
+	volumePattern := analyseVolumePatternAI(ctx, s.pool, symbol, ls)
 
 	// 7. Sample price history for chart (260 points max).
 	var history []ChartPoint
@@ -161,8 +165,11 @@ func (s *AnalysisService) Analyze(ctx context.Context, symbol string) (*FullAnal
 		PromoterHolding: fund.PromoterHolding,
 		FreeCashFlow:    fund.FreeCashFlowCr,
 
-		AvgVolume30D:   avgVol30D,
-		AvgTurnover30D: avgTurnover30DCr,
+		AvgVolume30D:   ls.AvgVolume,
+		AvgTurnover30D: ls.AvgTurnoverCr,
+		ZeroVolumePct:  ls.ZeroVolumePct,
+		VolumeCV:       ls.VolumeCV,
+		VolumePattern:  volumePattern,
 
 		BuySignals:     buys,
 		CautionSignals: cautions,
@@ -187,6 +194,7 @@ func (s *AnalysisService) GetLatest(ctx context.Context, symbol string) (*FullAn
 		       trailing_pe, price_to_book, roe, roce, revenue_growth, earnings_growth,
 		       debt_to_equity, dividend_yield, market_cap_cr, week_52_high, week_52_low,
 		       promoter_holding, free_cash_flow, avg_volume_30d, avg_turnover_30d,
+		       zero_volume_pct, volume_cv, volume_pattern,
 		       buy_signals, caution_signals, analyzed_at
 		FROM stock_analysis
 		WHERE symbol = $1
@@ -204,6 +212,7 @@ func (s *AnalysisService) GetLatest(ctx context.Context, symbol string) (*FullAn
 		&fa.TrailingPE, &fa.PriceToBook, &fa.ROE, &fa.ROCE, &fa.RevenueGrowth, &fa.EarningsGrowth,
 		&fa.DebtToEquity, &fa.DividendYield, &fa.MarketCapCr, &fa.Week52High, &fa.Week52Low,
 		&fa.PromoterHolding, &fa.FreeCashFlow, &fa.AvgVolume30D, &fa.AvgTurnover30D,
+		&fa.ZeroVolumePct, &fa.VolumeCV, &fa.VolumePattern,
 		&buyStr, &cauStr, &fa.AnalyzedAt,
 	)
 	if err != nil {
@@ -262,10 +271,11 @@ func (s *AnalysisService) persist(ctx context.Context, fa *FullAnalysis, fund *S
 			trailing_pe, price_to_book, roe, roce, revenue_growth, earnings_growth,
 			debt_to_equity, dividend_yield, market_cap_cr, week_52_high, week_52_low,
 			promoter_holding, free_cash_flow, avg_volume_30d, avg_turnover_30d,
+			zero_volume_pct, volume_cv, volume_pattern,
 			buy_signals, caution_signals, metrics_json, analyzed_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NOW()
+			$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,NOW()
 		)
 		ON CONFLICT (symbol, analysis_date) DO UPDATE SET
 			company_name=EXCLUDED.company_name, sector=EXCLUDED.sector,
@@ -283,6 +293,8 @@ func (s *AnalysisService) persist(ctx context.Context, fa *FullAnalysis, fund *S
 			week_52_high=EXCLUDED.week_52_high, week_52_low=EXCLUDED.week_52_low,
 			promoter_holding=EXCLUDED.promoter_holding, free_cash_flow=EXCLUDED.free_cash_flow,
 			avg_volume_30d=EXCLUDED.avg_volume_30d, avg_turnover_30d=EXCLUDED.avg_turnover_30d,
+			zero_volume_pct=EXCLUDED.zero_volume_pct, volume_cv=EXCLUDED.volume_cv,
+			volume_pattern=EXCLUDED.volume_pattern,
 			buy_signals=EXCLUDED.buy_signals, caution_signals=EXCLUDED.caution_signals,
 			metrics_json=EXCLUDED.metrics_json, analyzed_at=NOW()
 	`,
@@ -293,6 +305,7 @@ func (s *AnalysisService) persist(ctx context.Context, fa *FullAnalysis, fund *S
 		fa.TrailingPE, fa.PriceToBook, fa.ROE, fa.ROCE, fa.RevenueGrowth, fa.EarningsGrowth,
 		fa.DebtToEquity, fa.DividendYield, fa.MarketCapCr, fa.Week52High, fa.Week52Low,
 		fa.PromoterHolding, fa.FreeCashFlow, fa.AvgVolume30D, fa.AvgTurnover30D,
+		fa.ZeroVolumePct, fa.VolumeCV, fa.VolumePattern,
 		buyStr, cauStr, metricsJSON,
 	)
 	return err
@@ -381,28 +394,61 @@ func fetchYahooPricesFull(ctx context.Context, client *http.Client, symbol strin
 	return navs, pts, nil
 }
 
-// computeLiquidity returns 30-day avg daily volume and avg turnover (in crores).
-func computeLiquidity(pts []pricePoint) (avgVol30D, avgTurnover30DCr float64) {
+// LiquidityStats holds computed volume metrics for the last 30 days.
+type LiquidityStats struct {
+	AvgVolume      float64
+	AvgTurnoverCr  float64
+	ZeroVolumePct  float64 // % of trading days with 0 volume
+	VolumeCV       float64 // coefficient of variation (std dev / mean)
+	Recent30       []pricePoint // last 30 calendar days of points
+}
+
+// computeLiquidity computes volume stats for the last 30 calendar days.
+func computeLiquidity(pts []pricePoint) LiquidityStats {
 	if len(pts) == 0 {
-		return 0, 0
+		return LiquidityStats{}
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -30)
-	var totalVol, totalTurnover float64
-	var count int
+	var recent []pricePoint
 	for _, p := range pts {
-		if p.Date.Before(cutoff) {
-			continue
+		if !p.Date.Before(cutoff) {
+			recent = append(recent, p)
 		}
+	}
+	if len(recent) == 0 {
+		return LiquidityStats{}
+	}
+
+	var totalVol, totalTurnover float64
+	var zeroDays int
+	for _, p := range recent {
 		totalVol += p.Volume
 		totalTurnover += p.Volume * p.Close
-		count++
+		if p.Volume == 0 {
+			zeroDays++
+		}
 	}
-	if count == 0 {
-		return 0, 0
+	n := float64(len(recent))
+	avgVol := totalVol / n
+
+	// Coefficient of variation
+	var variance float64
+	for _, p := range recent {
+		d := p.Volume - avgVol
+		variance += d * d
 	}
-	avgVol30D = totalVol / float64(count)
-	avgTurnover30DCr = totalTurnover / float64(count) / 1e7
-	return roundF(avgVol30D, 0), roundF(avgTurnover30DCr, 2)
+	cv := 0.0
+	if avgVol > 0 {
+		cv = roundF(math.Sqrt(variance/n)/avgVol, 2)
+	}
+
+	return LiquidityStats{
+		AvgVolume:     roundF(avgVol, 0),
+		AvgTurnoverCr: roundF(totalTurnover/n/1e7, 2),
+		ZeroVolumePct: roundF(float64(zeroDays)/n*100, 1),
+		VolumeCV:      cv,
+		Recent30:      recent,
+	}
 }
 
 // yahooExtendedResp extends the basic quoteSummary response with extra modules.
@@ -544,24 +590,73 @@ func fetchYahooFundamentals(ctx context.Context, client *http.Client, symbol str
 	return sm, nil
 }
 
-// appendLiquiditySignals adds buy/caution signals based on 30-day average volume and turnover.
-// Thresholds (loose — tighten as needed):
-//   - Turnover < ₹1 Cr/day  → illiquid warning
-//   - Turnover ₹1–5 Cr/day  → low liquidity note
-//   - Turnover > ₹50 Cr/day → high liquidity buy signal
-func appendLiquiditySignals(buys, cautions []string, avgVol, avgTurnoverCr float64) ([]string, []string) {
-	if avgVol <= 0 {
+// appendLiquiditySignals adds rule-based buy/caution signals from liquidity stats.
+func appendLiquiditySignals(buys, cautions []string, ls LiquidityStats) ([]string, []string) {
+	if ls.AvgVolume <= 0 {
 		return buys, cautions
 	}
+	// Turnover-based liquidity
 	switch {
-	case avgTurnoverCr < 1:
-		cautions = append(cautions, fmt.Sprintf("Very low liquidity — avg daily turnover ₹%.2f Cr (%.0f shares/day)", avgTurnoverCr, avgVol))
-	case avgTurnoverCr < 5:
-		cautions = append(cautions, fmt.Sprintf("Low liquidity — avg daily turnover ₹%.1f Cr (%.0f shares/day)", avgTurnoverCr, avgVol))
-	case avgTurnoverCr > 50:
-		buys = append(buys, fmt.Sprintf("Highly liquid — avg daily turnover ₹%.0f Cr (%.0f shares/day)", avgTurnoverCr, avgVol))
+	case ls.AvgTurnoverCr < 1:
+		cautions = append(cautions, fmt.Sprintf("Very low liquidity — avg daily turnover ₹%.2f Cr (%.0f shares/day)", ls.AvgTurnoverCr, ls.AvgVolume))
+	case ls.AvgTurnoverCr < 5:
+		cautions = append(cautions, fmt.Sprintf("Low liquidity — avg daily turnover ₹%.1f Cr (%.0f shares/day)", ls.AvgTurnoverCr, ls.AvgVolume))
+	case ls.AvgTurnoverCr > 50:
+		buys = append(buys, fmt.Sprintf("Highly liquid — avg daily turnover ₹%.0f Cr (%.0f shares/day)", ls.AvgTurnoverCr, ls.AvgVolume))
+	}
+	// Zero-volume days
+	if ls.ZeroVolumePct > 30 {
+		cautions = append(cautions, fmt.Sprintf("%.0f%% of trading days had zero volume — severely illiquid or suspended periods", ls.ZeroVolumePct))
+	} else if ls.ZeroVolumePct > 10 {
+		cautions = append(cautions, fmt.Sprintf("%.0f%% of trading days had zero volume — patchy trading activity", ls.ZeroVolumePct))
+	}
+	// Erratic volume (CV > 2.0 is very erratic)
+	if ls.VolumeCV > 2.0 {
+		cautions = append(cautions, fmt.Sprintf("Highly erratic volume pattern (CV %.1f) — possible pump-and-dump risk", ls.VolumeCV))
+	} else if ls.VolumeCV > 1.0 {
+		cautions = append(cautions, fmt.Sprintf("Inconsistent volume (CV %.1f) — watch for manipulation", ls.VolumeCV))
 	}
 	return buys, cautions
+}
+
+// analyseVolumePatternAI uses the configured AI provider to describe the volume pattern
+// in plain English. Returns empty string if AI is not configured or call fails.
+func analyseVolumePatternAI(ctx context.Context, pool *pgxpool.Pool, symbol string, ls LiquidityStats) string {
+	if len(ls.Recent30) == 0 {
+		return ""
+	}
+
+	// Load AI config from app_settings.
+	var provider, key, model string
+	_ = pool.QueryRow(ctx, `SELECT value FROM app_settings WHERE key='ai_provider'`).Scan(&provider)
+	_ = pool.QueryRow(ctx, `SELECT value FROM app_settings WHERE key='ai_api_key'`).Scan(&key)
+	_ = pool.QueryRow(ctx, `SELECT value FROM app_settings WHERE key='ai_model'`).Scan(&model)
+	if provider == "" || key == "" {
+		return ""
+	}
+
+	// Build a compact CSV of date,volume for the AI.
+	var sb strings.Builder
+	sb.WriteString("date,volume\n")
+	for _, p := range ls.Recent30 {
+		sb.WriteString(fmt.Sprintf("%s,%.0f\n", p.Date.Format("2006-01-02"), p.Volume))
+	}
+
+	cfg := AIConfig{Provider: provider, APIKey: key, Model: model}
+	system := `You are a quantitative analyst. Analyse the given 30-day daily volume data for a stock and describe the trading pattern in ONE concise sentence (max 20 words). Focus on: consistency, zero-volume days, sudden spikes, accumulation/distribution signs, or manipulation risk. Be direct and factual.`
+	user := fmt.Sprintf("Symbol: %s\nAvg volume: %.0f/day | Zero-volume days: %.0f%% | CV: %.2f\n\n%s",
+		symbol, ls.AvgVolume, ls.ZeroVolumePct, ls.VolumeCV, sb.String())
+
+	result, err := callProviderJSON(ctx, cfg, system, user)
+	if err != nil {
+		slog.Warn("AI volume pattern failed", "symbol", symbol, "err", err)
+		return ""
+	}
+	// Strip any JSON wrapping if the model returned it.
+	result = strings.Trim(result, `"{}`)
+	result = strings.TrimPrefix(result, `"pattern":`)
+	result = strings.Trim(result, `" `)
+	return result
 }
 
 // fetchYahooBalanceSheet pulls latest annualTotalAssets + annualCurrentLiabilities

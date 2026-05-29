@@ -295,6 +295,60 @@ function AnalysisPanel({ symbol }: { symbol: string }) {
                 <FundRow label="Free Cash Flow" value={fa.free_cash_flow} unit="Cr" good={fa.free_cash_flow > 0} bad={fa.free_cash_flow < 0} />
               </div>
             </div>
+
+            {/* Liquidity */}
+            {fa.avg_volume_30d > 0 && (
+              <div className="space-y-1">
+                <p className="text-xs font-semibold text-foreground/70 uppercase tracking-wide">Liquidity (30-day avg)</p>
+                <div className="rounded-xl border border-border/40 bg-muted/20 px-3 divide-y divide-border/30">
+                  <div className="flex items-center justify-between py-1.5">
+                    <span className="text-xs text-muted-foreground">Daily Volume</span>
+                    <span className={cn(
+                      'text-xs font-semibold tabular-nums',
+                      fa.avg_volume_30d > 500000 ? 'text-emerald-500' : fa.avg_volume_30d < 50000 ? 'text-red-500' : 'text-foreground'
+                    )}>
+                      {fa.avg_volume_30d >= 1e7
+                        ? `${(fa.avg_volume_30d / 1e7).toFixed(2)} Cr`
+                        : fa.avg_volume_30d >= 1e5
+                          ? `${(fa.avg_volume_30d / 1e5).toFixed(1)} L`
+                          : fa.avg_volume_30d.toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between py-1.5">
+                    <span className="text-xs text-muted-foreground">Daily Turnover</span>
+                    <span className={cn(
+                      'text-xs font-semibold tabular-nums',
+                      fa.avg_turnover_30d > 50 ? 'text-emerald-500' : fa.avg_turnover_30d < 1 ? 'text-red-500' : 'text-foreground'
+                    )}>
+                      ₹{fa.avg_turnover_30d >= 1000
+                        ? `${(fa.avg_turnover_30d / 1000).toFixed(1)}K Cr`
+                        : `${fa.avg_turnover_30d.toFixed(1)} Cr`}
+                    </span>
+                  </div>
+                  {fa.zero_volume_pct > 0 && (
+                    <div className="flex items-center justify-between py-1.5">
+                      <span className="text-xs text-muted-foreground">Zero-volume Days</span>
+                      <span className={cn('text-xs font-semibold tabular-nums',
+                        fa.zero_volume_pct > 30 ? 'text-red-500' : fa.zero_volume_pct > 10 ? 'text-amber-500' : 'text-foreground'
+                      )}>{fa.zero_volume_pct.toFixed(0)}%</span>
+                    </div>
+                  )}
+                  {fa.volume_cv > 0 && (
+                    <div className="flex items-center justify-between py-1.5">
+                      <span className="text-xs text-muted-foreground">Volume Consistency</span>
+                      <span className={cn('text-xs font-semibold tabular-nums',
+                        fa.volume_cv > 2 ? 'text-red-500' : fa.volume_cv > 1 ? 'text-amber-500' : 'text-emerald-500'
+                      )}>
+                        {fa.volume_cv > 2 ? 'Erratic' : fa.volume_cv > 1 ? 'Inconsistent' : 'Consistent'} ({fa.volume_cv.toFixed(1)})
+                      </span>
+                    </div>
+                  )}
+                </div>
+              {fa.volume_pattern && (
+                <p className="mt-1.5 text-[11px] text-muted-foreground italic px-1">{fa.volume_pattern}</p>
+              )}
+              </div>
+            )}
           </div>
 
           {/* Buy / Caution signals */}

@@ -825,6 +825,9 @@ export interface StockAnalysis {
   free_cash_flow: number;
   avg_volume_30d: number;
   avg_turnover_30d: number;
+  zero_volume_pct: number;
+  volume_cv: number;
+  volume_pattern: string;
   buy_signals: string[];
   caution_signals: string[];
   price_history?: { d: string; v: number }[];

@@ -35,6 +35,9 @@ CREATE TABLE stock_analysis (
     free_cash_flow   NUMERIC(14,2) NOT NULL DEFAULT 0,
     avg_volume_30d   NUMERIC(18,0) NOT NULL DEFAULT 0,
     avg_turnover_30d NUMERIC(14,2) NOT NULL DEFAULT 0,
+    zero_volume_pct  NUMERIC(5,1)  NOT NULL DEFAULT 0,
+    volume_cv        NUMERIC(6,2)  NOT NULL DEFAULT 0,
+    volume_pattern   TEXT          NOT NULL DEFAULT '',
     -- Signal narratives (pipe-separated lists)
     buy_signals      TEXT          NOT NULL DEFAULT '',
     caution_signals  TEXT          NOT NULL DEFAULT '',
