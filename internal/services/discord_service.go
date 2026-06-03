@@ -14,9 +14,10 @@ import (
 
 // DiscordSettings holds all Discord webhook + alert configuration.
 type DiscordSettings struct {
-	WebhookURL        string  `json:"webhook_url"`
-	Enabled           bool    `json:"enabled"`
-	DrawdownThreshold float64 `json:"drawdown_threshold"` // e.g. 10.0 means -10%
+	WebhookURL             string  `json:"webhook_url"`
+	Enabled                bool    `json:"enabled"`
+	DrawdownAlertEnabled   bool    `json:"drawdown_alert_enabled"`
+	DrawdownThreshold      float64 `json:"drawdown_threshold"` // e.g. 10.0 means -10%
 	// Additional alert types
 	MoverAlertEnabled bool    `json:"mover_alert_enabled"`
 	MoverThreshold    float64 `json:"mover_threshold"`    // single-day % drop, default 3
@@ -61,9 +62,10 @@ func (s *DiscordService) GetSettings(ctx context.Context) (*DiscordSettings, err
 	defer rows.Close()
 
 	cfg := &DiscordSettings{
-		DrawdownThreshold: 10.0,
-		MoverThreshold:    3.0,
-		LTCGThresholdPct:  80.0,
+		DrawdownAlertEnabled: true,
+		DrawdownThreshold:    10.0,
+		MoverThreshold:       3.0,
+		LTCGThresholdPct:     80.0,
 	}
 	for rows.Next() {
 		var k, v string
@@ -81,6 +83,8 @@ func (s *DiscordService) GetSettings(ctx context.Context) (*DiscordSettings, err
 			cfg.WebhookURL = v
 		case "discord_alert_enabled":
 			cfg.Enabled = v == "true"
+		case "discord_drawdown_alert_enabled":
+			cfg.DrawdownAlertEnabled = v == "true"
 		case "discord_drawdown_threshold":
 			pf(&cfg.DrawdownThreshold)
 		case "discord_mover_alert_enabled":
@@ -112,17 +116,18 @@ func (s *DiscordService) SaveSettings(ctx context.Context, cfg *DiscordSettings)
 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO app_settings (key, value, updated_at) VALUES
-			('discord_alert_enabled',       $1, NOW()),
-			('discord_drawdown_threshold',  $2, NOW()),
-			('discord_mover_alert_enabled', $3, NOW()),
-			('discord_mover_threshold',     $4, NOW()),
-			('discord_ath_alert_enabled',   $5, NOW()),
-			('discord_ltcg_alert_enabled',  $6, NOW()),
-			('discord_ltcg_threshold_pct',  $7, NOW()),
-			('discord_mood_alert_enabled',  $8, NOW())
+			('discord_alert_enabled',          $1, NOW()),
+			('discord_drawdown_alert_enabled', $2, NOW()),
+			('discord_drawdown_threshold',     $3, NOW()),
+			('discord_mover_alert_enabled',    $4, NOW()),
+			('discord_mover_threshold',        $5, NOW()),
+			('discord_ath_alert_enabled',      $6, NOW()),
+			('discord_ltcg_alert_enabled',     $7, NOW()),
+			('discord_ltcg_threshold_pct',     $8, NOW()),
+			('discord_mood_alert_enabled',     $9, NOW())
 		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
 	`,
-		b(cfg.Enabled), f(cfg.DrawdownThreshold),
+		b(cfg.Enabled), b(cfg.DrawdownAlertEnabled), f(cfg.DrawdownThreshold),
 		b(cfg.MoverAlertEnabled), f(cfg.MoverThreshold),
 		b(cfg.ATHAlertEnabled),
 		b(cfg.LTCGAlertEnabled), f(cfg.LTCGThresholdPct),
@@ -197,6 +202,92 @@ func (s *DiscordService) SendTestMessage(ctx context.Context) error {
 	})
 }
 
+// SendAllTestAlerts fires one dummy embed for every alert type so the user can
+// preview formatting before real data triggers them.
+func (s *DiscordService) SendAllTestAlerts(ctx context.Context) error {
+	cfg, err := s.GetSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if cfg.WebhookURL == "" {
+		return fmt.Errorf("no webhook URL configured")
+	}
+	footer := &struct {
+		Text string `json:"text"`
+	}{Text: "WealthFolio Alert — preview only"}
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	embeds := []discordEmbed{
+		// Drawdown
+		{
+			Title:       "📉 Drawdown Alert — Quant Small Cap Fund",
+			Description: "**Quant Small Cap Fund** has drawn down **-12.4%** from its all-time high of ₹310.50.\nCurrent value: ₹272.00",
+			Color:       15548997, // red
+			Timestamp:   now,
+			Footer:      footer,
+		},
+		// Portfolio drawdown
+		{
+			Title:       "📉 Portfolio Drawdown",
+			Description: "Total portfolio has drawn down **-11.2%** from its all-time high of ₹18,45,000.\nCurrent value: ₹16,38,060",
+			Color:       15548997,
+			Timestamp:   now,
+			Footer:      footer,
+		},
+		// Big daily mover (up)
+		{
+			Title:       "📈 Nippon India Small Cap — +5.3% in one day",
+			Description: "**Nippon India Small Cap Fund** moved **+5.26%** today.\nYesterday: ₹193.76 → Today: ₹203.95",
+			Color:       3066993, // green
+			Timestamp:   now,
+			Footer:      footer,
+		},
+		// Big daily mover (down)
+		{
+			Title:       "📉 TQQQ — -6.8% in one day",
+			Description: "**ProShares UltraPro QQQ** moved **-6.80%** today.\nYesterday: ₹6,576.93 → Today: ₹6,129.20",
+			Color:       15548997,
+			Timestamp:   now,
+			Footer:      footer,
+		},
+		// ATH
+		{
+			Title:       "🏆 Portfolio All-Time High!",
+			Description: "Your portfolio just set a **new all-time high** of ₹18,92,500 (previous: ₹18,45,000). 🎉",
+			Color:       3066993,
+			Timestamp:   now,
+			Footer:      footer,
+		},
+		// LTCG
+		{
+			Title:       "🏛️ LTCG Tax Milestone Alert",
+			Description: "Estimated unrealized LTCG: **₹1,02,400** (82% of the ₹1.25L exemption limit).\nConsider reviewing positions for tax harvesting before Mar 31.",
+			Color:       15105570, // orange
+			Timestamp:   now,
+			Footer:      footer,
+		},
+		// Market mood — fear
+		{
+			Title:       "😱 Market Mood: Extreme Fear",
+			Description: "MMI is at **18** (Extreme Fear).\nHistorically, extreme fear is a **buying opportunity** — markets tend to be oversold.",
+			Color:       3066993,
+			Timestamp:   now,
+			Footer:      footer,
+		},
+		// Market mood — greed
+		{
+			Title:       "🤑 Market Mood: Extreme Greed",
+			Description: "MMI is at **84** (Extreme Greed).\nMarkets may be overheated — consider staying cautious or booking partial profits.",
+			Color:       15548997,
+			Timestamp:   now,
+			Footer:      footer,
+		},
+	}
+
+	// Discord allows max 10 embeds per message; send in one shot.
+	return s.sendWebhook(cfg.WebhookURL, discordPayload{Embeds: embeds})
+}
+
 // ─── Drawdown alert logic ─────────────────────────────────────────────────────
 
 // CheckAndSendDrawdownAlerts computes per-instrument and portfolio drawdowns,
@@ -207,7 +298,7 @@ func (s *DiscordService) CheckAndSendDrawdownAlerts(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !cfg.Enabled || cfg.WebhookURL == "" {
+	if !cfg.Enabled || !cfg.DrawdownAlertEnabled || cfg.WebhookURL == "" {
 		return nil
 	}
 

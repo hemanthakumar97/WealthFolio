@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { InstrumentAnalysisPanel } from '@/components/InstrumentAnalysisPanel';
@@ -21,6 +21,9 @@ import {
   Clock,
   Activity,
   LineChart,
+  X,
+  ExternalLink,
+  Pencil,
 } from 'lucide-react';
 
 import {
@@ -62,6 +65,32 @@ interface InvestorProfile {
 
 type StreamState = 'idle' | 'streaming' | 'done' | 'error';
 
+// ─── Refresh progress types ───────────────────────────────────────────────────
+
+type FundRefreshStatus = 'pending' | 'fetching' | 'done' | 'error';
+type FundAIStatus = 'pending' | 'analysing' | 'done' | 'error';
+
+interface FundProgress {
+  id: number;
+  name: string;
+  assetType: string;
+  status: FundRefreshStatus;
+  score?: number;
+  error?: string;
+  aiStatus?: FundAIStatus;
+  aiAction?: string;
+  aiError?: string;
+}
+
+interface RefreshState {
+  phase: 'idle' | 'scores' | 'ai' | 'done';
+  funds: FundProgress[];
+  successCount: number;
+  totalCount: number;
+  signalsGenerated: boolean;
+  signalError?: string;
+}
+
 // ─── Action config ────────────────────────────────────────────────────────────
 
 const ACTION_CFG: Record<
@@ -87,13 +116,6 @@ const ACTION_CFG: Record<
     bg: 'bg-blue-500/10',
     border: 'border-blue-500/25',
     icon: Minus,
-  },
-  SWITCH: {
-    label: 'Switch',
-    color: 'text-orange-400',
-    bg: 'bg-orange-500/10',
-    border: 'border-orange-500/25',
-    icon: RefreshCw,
   },
   PARTIAL_SELL: {
     label: 'Partial Sell',
@@ -189,41 +211,156 @@ function ConfidenceBar({ value }: { value: number }) {
 
 // ─── Score bar (used in expanded analysis row) ────────────────────────────────
 
-function ScoreBar({ score }: { score: number }) {
-  const pct   = score; // /100
-  const color = score >= 80 ? 'bg-emerald-500' : score >= 65 ? 'bg-blue-500' : score >= 50 ? 'bg-orange-500' : 'bg-red-500';
-  const text  = score >= 80 ? 'text-emerald-400' : score >= 65 ? 'text-blue-400' : score >= 50 ? 'text-orange-400' : 'text-red-400';
-  return (
-    <div className="flex items-center gap-2">
-      <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
-        <div className={cn('h-full rounded-full', color)} style={{ width: `${pct}%` }} />
-      </div>
-      <span className={cn('text-[11px] tabular-nums font-medium', text)}>{score}/100</span>
-    </div>
-  );
+// Maps a raw Zero1 score → action label, matching backend scoreToAction thresholds.
+// Does NOT apply context modifiers (STCG, CategoryBearish) — those are the AI signal's job.
+function scoreToSignalAction(score: number): SignalAction {
+  if (score >= 80) return 'BUY_MORE';
+  if (score >= 65) return 'HOLD';
+  if (score >= 50) return 'PARTIAL_SELL';
+  return 'BOOK_PROFIT';
 }
 
-
-
-function ScoreDetailInRow({ instrumentId, storedScore }: { instrumentId: number; storedScore?: number }) {
+function ScoreSignalCell({ instrumentId, fallbackScore }: { instrumentId: number; fallbackScore?: number }) {
+  // Fetch score for this instrument. Backend serves from instrument_scores cache so this is fast.
+  // staleTime 5min prevents re-fetching while browsing; page refresh gets a fresh load.
   const { data } = useQuery({
     queryKey: ['instrument-metrics', instrumentId],
     queryFn: () => signalApi.getInstrumentMetrics(instrumentId),
     staleTime: 5 * 60_000,
-    enabled: false, // only reads from cache; ScoreCell already triggers the fetch
   });
 
-  const score = storedScore || data?.metrics?.zero1_score;
-  if (!score) return null;
+  const score = data?.metrics?.zero1_score || fallbackScore || 0;
+  const action = score > 0 ? scoreToSignalAction(score) : null;
+  const cfg = action ? ACTION_CFG[action] : null;
+  const Icon = cfg?.icon ?? Minus;
+  const ringColor = score >= 80 ? '#10b981' : score >= 65 ? '#60a5fa' : score >= 50 ? '#f97316' : '#ef4444';
+  const r = 16; const circ = 2 * Math.PI * r;
 
   return (
-    <div className="shrink-0">
-      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Score</p>
-      <ScoreBar score={score} />
-      <p className="mt-1 text-[10px] text-muted-foreground/60">
-        {score >= 80 ? 'Strong Buy' : score >= 65 ? 'Hold' : score >= 50 ? 'Switch' : 'Sell'}
-        {' · '}click name to view full breakdown
-      </p>
+    <div className="flex flex-col items-center gap-1.5">
+      <div className="relative flex items-center justify-center">
+        <svg width={40} height={40} className="-rotate-90">
+          <circle cx={20} cy={20} r={r} fill="none" stroke="currentColor" strokeWidth={3} className="text-muted/25" />
+          {score > 0 && (
+            <circle cx={20} cy={20} r={r} fill="none" stroke={ringColor} strokeWidth={3}
+              strokeDasharray={`${(score / 100) * circ} ${circ}`} strokeLinecap="round" />
+          )}
+        </svg>
+        <span className="absolute text-[10px] font-bold tabular-nums" style={{ color: score > 0 ? ringColor : undefined }}>
+          {score > 0 ? score : '—'}
+        </span>
+      </div>
+      {cfg ? (
+        <span className={cn('flex items-center gap-1 text-[10px] font-semibold', cfg.color)}>
+          <Icon className="size-2.5" />{cfg.label}
+        </span>
+      ) : (
+        <span className="text-[10px] text-muted-foreground/50">no score</span>
+      )}
+    </div>
+  );
+}
+
+// ─── Refresh progress panel ───────────────────────────────────────────────────
+
+function RefreshProgressPanel({ state, onClose }: { state: RefreshState; onClose: () => void }) {
+  if (state.phase === 'idle') return null;
+
+  const statusIcon = (s: FundRefreshStatus) => {
+    if (s === 'fetching') return <Loader2 className="size-3.5 animate-spin text-blue-400 shrink-0" />;
+    if (s === 'done')     return <CheckCircle2 className="size-3.5 text-emerald-400 shrink-0" />;
+    if (s === 'error')    return <XCircle className="size-3.5 text-red-400 shrink-0" />;
+    return <div className="size-3.5 rounded-full border border-white/20 shrink-0" />;
+  };
+
+  const scoreColor = (s?: number) => {
+    if (!s) return 'text-muted-foreground';
+    if (s >= 80) return 'text-emerald-400';
+    if (s >= 65) return 'text-blue-400';
+    if (s >= 50) return 'text-amber-400';
+    return 'text-red-400';
+  };
+
+  return (
+    <div className="rounded-xl border border-border bg-card/60 overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-2.5 bg-muted/20 border-b border-border">
+        <div className="flex items-center gap-2">
+          {state.phase !== 'done' && <Loader2 className="size-3.5 animate-spin text-primary" />}
+          {state.phase === 'done' && <CheckCircle2 className="size-3.5 text-emerald-400" />}
+          <span className="text-xs font-semibold">
+            {state.phase === 'scores' && 'Fetching data + AI analysis (3 parallel)…'}
+            {state.phase === 'ai'     && 'Fetching data + AI analysis (3 parallel)…'}
+            {state.phase === 'done'   && `Done · ${state.funds.filter(f => f.aiStatus === 'done').length}/${state.funds.length} analysed${state.signalsGenerated ? ' · signals saved' : ''}`}
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          {(state.phase === 'ai' || state.phase === 'done') && (
+            <span className="text-[10px] text-muted-foreground">
+              {state.funds.filter(f => f.status === 'done').length}/{state.funds.length} fetched
+            </span>
+          )}
+          {state.phase === 'done' && (
+            <button onClick={onClose} className="rounded p-0.5 text-muted-foreground hover:text-foreground hover:bg-white/8 transition-colors" title="Dismiss">
+              <X className="size-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Fund list */}
+      <div className="divide-y divide-border/40 max-h-72 overflow-y-auto">
+        {state.funds.map(fund => (
+          <div key={fund.id} className="flex items-center gap-2.5 px-4 py-2">
+            {statusIcon(fund.status)}
+            <span className={cn(
+              'flex-1 min-w-0 text-xs truncate',
+              fund.status === 'fetching' ? 'text-foreground' : 'text-muted-foreground',
+            )}>
+              {fund.name}
+            </span>
+            <span className="text-[10px] text-muted-foreground/50 shrink-0">{fund.assetType}</span>
+            {fund.score != null && fund.score > 0 && (
+              <span className={cn('text-[10px] font-semibold tabular-nums shrink-0', scoreColor(fund.score))}>
+                {fund.score}
+              </span>
+            )}
+            {fund.aiStatus === 'analysing' && (
+              <span className="flex items-center gap-1 text-[10px] text-primary/70 shrink-0">
+                <Sparkles className="size-2.5 animate-pulse" />AI
+              </span>
+            )}
+            {fund.aiStatus === 'done' && fund.aiAction && (
+              <span className="text-[10px] font-medium text-primary/80 shrink-0">{fund.aiAction.replace('_', ' ')}</span>
+            )}
+            {fund.aiStatus === 'error' && (
+              <span className="text-[10px] text-red-400 shrink-0">AI failed</span>
+            )}
+            {fund.error && (
+              <span className="text-[10px] text-red-400 shrink-0 max-w-[120px] truncate" title={fund.error}>
+                {fund.error}
+              </span>
+            )}
+          </div>
+        ))}
+        {state.funds.length === 0 && state.phase === 'scores' && (
+          <div className="px-4 py-3 text-xs text-muted-foreground">Starting…</div>
+        )}
+      </div>
+
+      {/* Live progress counts */}
+      {state.phase !== 'done' && state.funds.length > 0 && (
+        <div className="flex items-center justify-between px-4 py-2 bg-primary/5 border-t border-border text-[10px] text-muted-foreground">
+          <span>{state.funds.filter(f => f.status === 'fetching').length} fetching · {state.funds.filter(f => f.aiStatus === 'analysing').length} in AI</span>
+          <span>{state.funds.filter(f => f.aiStatus === 'done').length}/{state.funds.length} complete</span>
+        </div>
+      )}
+      {state.phase === 'done' && state.signalError && (
+        <div className="flex items-center gap-2 px-4 py-2.5 bg-destructive/5 border-t border-border">
+          <XCircle className="size-3.5 text-destructive shrink-0" />
+          <span className="text-xs text-destructive/80">Signal error: {state.signalError}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -506,6 +643,31 @@ function HoldingsTable({
 }) {
   const [openId, setOpenId] = useState<number | null>(null);
   const [analysisTarget, setAnalysisTarget] = useState<{ id: number; name: string } | null>(null);
+  const [urlEditId, setUrlEditId] = useState<number | null>(null);
+  const [urlInput, setUrlInput] = useState('');
+  const qc = useQueryClient();
+
+  const saveTickertapeMutation = useMutation({
+    mutationFn: ({ id, slug }: { id: number; slug: string }) =>
+      signalApi.saveTickertapeSlug(id, slug),
+    onSuccess: (_, { id }) => {
+      setUrlEditId(null);
+      setUrlInput('');
+      qc.invalidateQueries({ queryKey: ['instrument-metrics', id] });
+      qc.invalidateQueries({ queryKey: ['holdings'] });
+    },
+  });
+
+  const saveGrowwMutation = useMutation({
+    mutationFn: ({ id, slug }: { id: number; slug: string }) =>
+      signalApi.saveGrowwSlug(id, slug),
+    onSuccess: (_, { id }) => {
+      setUrlEditId(null);
+      setUrlInput('');
+      qc.invalidateQueries({ queryKey: ['instrument-metrics', id] });
+      qc.invalidateQueries({ queryKey: ['holdings'] });
+    },
+  });
 
   const { data: holdings } = useQuery({
     queryKey: ['holdings'],
@@ -556,7 +718,16 @@ function HoldingsTable({
                 Return
               </th>
               <th className="px-4 py-3 text-center text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                Signal
+                <div className="flex flex-col items-center gap-0.5">
+                  <span>Score</span>
+                  <span className="text-[9px] text-muted-foreground/50 normal-case tracking-normal">raw formula</span>
+                </div>
+              </th>
+              <th className="px-4 py-3 text-center text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                <div className="flex flex-col items-center gap-0.5">
+                  <span>AI Signal</span>
+                  <span className="text-[9px] text-muted-foreground/50 normal-case tracking-normal">+ tax &amp; context</span>
+                </div>
               </th>
             </tr>
           </thead>
@@ -611,6 +782,106 @@ function HoldingsTable({
                                 {sig.reason}
                               </p>
                             )}
+                            {((): React.ReactNode => {
+                              const at = h?.asset_type ?? '';
+                              const isTickertape = ['ETF', 'STOCK', 'METAL', 'GOLD'].includes(at);
+                              const isGroww = at === 'MF';
+                              const isYahoo = at === 'US_FUND';
+                              if (!isTickertape && !isGroww && !isYahoo) return null;
+
+                              if (isYahoo) {
+                                const yahoo = h?.yahoo_symbol;
+                                return yahoo ? (
+                                  <a
+                                    href={`https://finance.yahoo.com/quote/${yahoo}/`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-0.5 text-[10px] text-primary/70 hover:text-primary hover:underline"
+                                    onClick={e => e.stopPropagation()}
+                                  >
+                                    <ExternalLink className="size-2.5" />
+                                    Yahoo Finance
+                                  </a>
+                                ) : (
+                                  <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground/40">
+                                    <ExternalLink className="size-2.5" />
+                                    Yahoo Finance
+                                  </span>
+                                );
+                              }
+
+                              const currentSlug = isGroww ? (h?.groww_slug ?? '') : (h?.tickertape_slug ?? '');
+                              const label = isGroww ? 'Groww' : 'Tickertape';
+                              const placeholder = isGroww
+                                ? 'groww.in/mutual-funds/… or slug'
+                                : 'tickertape.in/etfs/… or /stocks/…';
+                              const isPending = isGroww
+                                ? saveGrowwMutation.isPending
+                                : saveTickertapeMutation.isPending;
+                              const doSave = (slug: string) => {
+                                if (isGroww) saveGrowwMutation.mutate({ id: sig.instrument_id, slug });
+                                else saveTickertapeMutation.mutate({ id: sig.instrument_id, slug });
+                              };
+
+                              return urlEditId === sig.instrument_id ? (
+                                <div className="mt-1 flex items-center gap-1">
+                                  <Input
+                                    autoFocus
+                                    value={urlInput}
+                                    onChange={e => setUrlInput(e.target.value)}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter' && urlInput.trim()) doSave(urlInput.trim());
+                                      if (e.key === 'Escape') { setUrlEditId(null); setUrlInput(''); }
+                                    }}
+                                    placeholder={placeholder}
+                                    className="h-6 w-48 px-1.5 text-[10px]"
+                                  />
+                                  <button
+                                    onClick={() => urlInput.trim() && doSave(urlInput.trim())}
+                                    disabled={!urlInput.trim() || isPending}
+                                    className="text-[10px] text-primary hover:underline disabled:opacity-40"
+                                  >
+                                    {isPending ? '…' : 'Save'}
+                                  </button>
+                                  <button
+                                    onClick={() => { setUrlEditId(null); setUrlInput(''); }}
+                                    className="text-[10px] text-muted-foreground hover:text-foreground"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : currentSlug ? (
+                                <div className="flex items-center gap-1">
+                                  <a
+                                    href={isGroww ? `https://groww.in/mutual-funds/${currentSlug}` : `https://www.tickertape.in${currentSlug}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-0.5 text-[10px] text-primary/70 hover:text-primary hover:underline"
+                                    onClick={e => e.stopPropagation()}
+                                  >
+                                    <ExternalLink className="size-2.5" />
+                                    <span>{label}</span>
+                                  </a>
+                                  <button
+                                    onClick={() => { setUrlEditId(sig.instrument_id); setUrlInput(currentSlug); }}
+                                    className="text-muted-foreground/40 hover:text-primary transition-colors"
+                                    title={`Edit ${label} URL`}
+                                  >
+                                    <Pencil className="size-2.5" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => { setUrlEditId(sig.instrument_id); setUrlInput(''); }}
+                                  className="flex items-center gap-0.5 text-[10px] text-muted-foreground/50 transition-colors hover:text-primary"
+                                  title={`Set ${label} URL for analysis`}
+                                >
+                                  <ExternalLink className="size-2.5" />
+                                  <span>{label} URL</span>
+                                  <Pencil className="size-2" />
+                                </button>
+                              );
+                            })()}
                           </div>
                         ) : (
                           <span className="font-medium leading-tight">{sig.instrument_name}</span>
@@ -642,13 +913,18 @@ function HoldingsTable({
                       )}
                     </td>
 
-                    {/* Signal — click to expand AI analysis */}
-                    <td className="px-4 py-3">
+                    {/* Score column — raw formula signal */}
+                    <td className="px-3 py-3 text-center">
+                      <ScoreSignalCell instrumentId={sig.instrument_id} fallbackScore={sig.zero1_score} />
+                    </td>
+
+                    {/* AI Signal — click to expand reasoning */}
+                    <td className="px-3 py-3">
                       <button
                         onClick={() => setOpenId(isOpen ? null : sig.instrument_id)}
-                        title={isOpen ? 'Hide analysis' : 'View AI analysis'}
+                        title={isOpen ? 'Hide AI reasoning' : 'View AI reasoning'}
                         className={cn(
-                          'group flex w-full flex-col items-center gap-1 rounded-lg border px-2.5 py-2 text-left transition-all',
+                          'group flex w-full flex-col items-center gap-1.5 rounded-lg border px-2.5 py-2 transition-all',
                           isOpen
                             ? cn(action.border, action.bg, 'ring-1 ring-primary/20')
                             : cn('border-transparent hover:border-border', action.bg),
@@ -658,39 +934,38 @@ function HoldingsTable({
                           <ActionIcon className="size-3" />
                           {action.label}
                         </span>
-                        {sig.reason && (
-                          <span className="line-clamp-1 w-full text-center text-[10px] text-muted-foreground group-hover:text-foreground/70">
-                            {isOpen ? 'Click to collapse ↑' : 'View analysis ↓'}
-                          </span>
-                        )}
+                        <ConfidenceBar value={sig.confidence} />
+                        <span className="text-[9px] text-muted-foreground/60 group-hover:text-foreground/50">
+                          {isOpen ? 'collapse ↑' : 'reasoning ↓'}
+                        </span>
                       </button>
                     </td>
                   </tr>
 
-                  {/* Expandable AI analysis row */}
+                  {/* Expandable AI reasoning row */}
                   {isOpen && (
                     <tr
                       key={`${sig.instrument_id}-detail`}
                       className="border-b border-border bg-muted/5"
                     >
-                      <td colSpan={5} className="px-5 py-5">
-                        <div className="grid gap-5 sm:grid-cols-[auto_1fr_auto]">
-
-                          {/* Left — score + confidence */}
-                          <div className="flex flex-col gap-4">
-                            <div>
-                              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Confidence</p>
-                              <ConfidenceBar value={sig.confidence} />
+                      <td colSpan={6} className="px-5 py-5">
+                        {/* Divergence notice */}
+                        {(() => {
+                          const s = sig.zero1_score ?? 0;
+                          if (s <= 0 || scoreToSignalAction(s) === sig.action) return null;
+                          return (
+                            <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+                              <AlertTriangle className="size-3.5 text-amber-400 shrink-0 mt-0.5" />
+                              <p className="text-[11px] text-amber-400/80">
+                                Score formula says <strong>{ACTION_CFG[scoreToSignalAction(s)].label}</strong> but AI signal is <strong>{action.label}</strong> — STCG tax or category context overrode the raw score.
+                              </p>
                             </div>
-                            <ScoreDetailInRow instrumentId={sig.instrument_id} storedScore={sig.zero1_score} />
-                          </div>
-
-                          {/* Centre — reason + key points + qualitative */}
+                          );
+                        })()}
+                        <div className="grid gap-5 sm:grid-cols-[1fr_auto]">
+                          {/* Reason + key points + qualitative */}
                           <div className="min-w-0 space-y-3">
-                            {/* Summary reason */}
                             <p className="text-sm leading-relaxed text-foreground font-medium">{sig.reason}</p>
-
-                            {/* Key data points */}
                             {sig.key_points?.length > 0 && (
                               <ul className="space-y-1.5">
                                 {sig.key_points.map((pt, i) => (
@@ -701,16 +976,30 @@ function HoldingsTable({
                                 ))}
                               </ul>
                             )}
-
-                            {/* Qualitative AI note */}
+                            {sig.recent_events && (
+                              <div className={cn(
+                                'rounded-md border px-3 py-2',
+                                sig.events_impact === 'positive' ? 'border-emerald-500/30 bg-emerald-500/5' :
+                                sig.events_impact === 'negative' ? 'border-red-500/30 bg-red-500/5' :
+                                'border-blue-500/20 bg-blue-500/5',
+                              )}>
+                                <p className={cn(
+                                  'text-[10px] font-semibold uppercase tracking-wider mb-1',
+                                  sig.events_impact === 'positive' ? 'text-emerald-400' :
+                                  sig.events_impact === 'negative' ? 'text-red-400' :
+                                  'text-blue-400',
+                                )}>
+                                  Recent Events {sig.events_impact === 'positive' ? '↑' : sig.events_impact === 'negative' ? '↓' : '·'}
+                                </p>
+                                <p className="text-xs leading-relaxed text-muted-foreground">{sig.recent_events}</p>
+                              </div>
+                            )}
                             {sig.qualitative_note && (
                               <div className="rounded-md border border-border bg-muted/20 px-3 py-2">
                                 <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">AI Context</p>
                                 <p className="text-xs leading-relaxed text-muted-foreground italic">{sig.qualitative_note}</p>
                               </div>
                             )}
-
-                            {/* Tax note */}
                             {sig.tax_note && (
                               <div className="flex items-start gap-2">
                                 <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/8 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-amber-400">TAX</span>
@@ -718,8 +1007,7 @@ function HoldingsTable({
                               </div>
                             )}
                           </div>
-
-                          {/* Right — risk profile badge */}
+                          {/* Risk profile badge */}
                           <div className="shrink-0">
                             <div className={cn('flex items-center gap-1.5 rounded-full border px-2.5 py-1', profileCfg.border, profileCfg.bg)}>
                               <profileCfg.icon className={cn('size-3', profileCfg.color)} />
@@ -863,13 +1151,86 @@ function SignalPage() {
     },
   });
 
-  const refreshScoresMut = useMutation({
-    mutationFn: () => signalApi.refreshScores(),
-    onSuccess: () => {
-      // Invalidate all cached instrument-metrics so the table reloads fresh scores.
-      qc.invalidateQueries({ queryKey: ['instrument-metrics'] });
-    },
+  const [refreshState, setRefreshState] = useState<RefreshState>({
+    phase: 'idle', funds: [], successCount: 0, totalCount: 0, signalsGenerated: false,
   });
+  const refreshAbortRef = useRef<AbortController | null>(null);
+
+  const startRefresh = useCallback(async () => {
+    if (refreshAbortRef.current) refreshAbortRef.current.abort();
+    const ctrl = new AbortController();
+    refreshAbortRef.current = ctrl;
+
+    setRefreshState({ phase: 'scores', funds: [], successCount: 0, totalCount: 0, signalsGenerated: false });
+
+    try {
+      const res = await fetch('/api/ai/signal/refresh-scores', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          risk_profile: profile.riskProfile,
+          goal: profile.goal || 'Long-term wealth creation',
+          horizon: profile.horizon || '5+ years',
+        }),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') break;
+          try {
+            const evt = JSON.parse(data);
+            setRefreshState(prev => {
+              // ── Unified pipeline events ──────────────────────────────────────
+              if (evt.type === 'fund_start') {
+                // Fund enters pipeline — add to list as fetching
+                const exists = prev.funds.some(f => f.id === evt.instrument_id);
+                if (exists) return { ...prev, funds: prev.funds.map(f => f.id === evt.instrument_id ? { ...f, status: 'fetching' as FundRefreshStatus } : f) };
+                return { ...prev, phase: 'scores' as const, funds: [...prev.funds, { id: evt.instrument_id, name: evt.name, assetType: evt.asset_type ?? '', status: 'fetching' as FundRefreshStatus, aiStatus: 'pending' as FundAIStatus }] };
+              }
+              if (evt.type === 'fund_scored') {
+                // Metrics fetched — AI starting
+                return { ...prev, funds: prev.funds.map(f => f.id === evt.instrument_id ? { ...f, status: 'done' as FundRefreshStatus, score: evt.score, aiStatus: 'analysing' as FundAIStatus } : f) };
+              }
+              if (evt.type === 'fund_done') {
+                // AI complete
+                return { ...prev, funds: prev.funds.map(f => f.id === evt.instrument_id ? { ...f, status: 'done' as FundRefreshStatus, score: evt.score, aiStatus: 'done' as FundAIStatus, aiAction: evt.action } : f) };
+              }
+              if (evt.type === 'fund_error') {
+                return { ...prev, funds: prev.funds.map(f => f.id === evt.instrument_id ? { ...f, status: 'error' as FundRefreshStatus, aiStatus: 'error' as FundAIStatus, error: evt.error } : f) };
+              }
+              if (evt.type === 'all_done' || evt.type === 'done') {
+                return { ...prev, phase: 'done', successCount: evt.success ?? prev.successCount, totalCount: evt.total ?? prev.totalCount, signalsGenerated: evt.signals_generated ?? false, signalError: evt.signal_error };
+              }
+              return prev;
+            });
+          } catch { /* skip malformed */ }
+        }
+      }
+    } catch (e) {
+      if (e instanceof Error && e.name !== 'AbortError') {
+        setRefreshState(prev => ({ ...prev, phase: 'done' }));
+      }
+    }
+
+    // Invalidate caches when done.
+    qc.invalidateQueries({ queryKey: ['instrument-metrics'] });
+    qc.invalidateQueries({ queryKey: ['signal-holdings', profile.riskProfile] });
+  }, [profile, qc]);
+
+  const isRefreshing = refreshState.phase === 'scores' || refreshState.phase === 'ai';
 
   // The displayed signals: mutation result if freshly generated, otherwise stored.
   const signals = signalsMut.data ?? storedSignals;
@@ -971,25 +1332,22 @@ function SignalPage() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {refreshScoresMut.isSuccess && (
-                    <span className="text-[11px] text-emerald-400">
-                      ✓ {refreshScoresMut.data?.success}/{refreshScoresMut.data?.total} scores updated
-                    </span>
-                  )}
-                  {refreshScoresMut.isError && (
-                    <span className="text-[11px] text-destructive">Refresh failed</span>
-                  )}
                   <button
-                    onClick={() => refreshScoresMut.mutate()}
-                    disabled={refreshScoresMut.isPending}
-                    title="Re-compute and cache scores for all holdings"
+                    onClick={startRefresh}
+                    disabled={isRefreshing}
+                    title="Re-fetch metrics (3 at a time) + regenerate AI signals"
                     className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground disabled:opacity-50"
                   >
-                    <RefreshCw className={cn('size-3.5', refreshScoresMut.isPending && 'animate-spin')} />
-                    {refreshScoresMut.isPending ? 'Refreshing…' : 'Refresh Scores'}
+                    <RefreshCw className={cn('size-3.5', isRefreshing && 'animate-spin')} />
+                    {isRefreshing ? (refreshState.phase === 'ai' ? 'Generating signals…' : 'Fetching…') : 'Refresh Scores'}
                   </button>
                 </div>
               </div>
+            )}
+
+            {/* Live refresh progress panel */}
+            {refreshState.phase !== 'idle' && (
+              <RefreshProgressPanel state={refreshState} onClose={() => setRefreshState(s => ({ ...s, phase: 'idle' }))} />
             )}
 
             {/* Loading stored signals */}

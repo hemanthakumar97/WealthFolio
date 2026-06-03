@@ -23,7 +23,6 @@ import {
   Settings,
   AlertCircle,
   Bell,
-  BellOff,
   Send,
 } from 'lucide-react';
 
@@ -1324,6 +1323,7 @@ function NotificationsTab() {
   const [showURL, setShowURL] = useState(false);
   const [testStatus, setTestStatus] = useState<'idle' | 'sending' | 'ok' | 'err'>('idle');
   const [testError, setTestError] = useState('');
+  const [testAllStatus, setTestAllStatus] = useState<'idle' | 'sending' | 'ok' | 'err'>('idle');
 
   const { data, isLoading } = useQuery<DiscordSettings>({
     queryKey: ['discord-settings'],
@@ -1331,6 +1331,7 @@ function NotificationsTab() {
   });
 
   const [enabled, setEnabled] = useState(false);
+  const [drawdownEnabled, setDrawdownEnabled] = useState(true);
   const [threshold, setThreshold] = useState(10);
   const [moverEnabled, setMoverEnabled] = useState(false);
   const [moverThreshold, setMoverThreshold] = useState(3);
@@ -1343,6 +1344,7 @@ function NotificationsTab() {
   const [synced, setSynced] = useState(false);
   if (data && !synced) {
     setEnabled(data.enabled);
+    setDrawdownEnabled(data.drawdown_alert_enabled ?? true);
     setThreshold(data.drawdown_threshold);
     setMoverEnabled(data.mover_alert_enabled ?? false);
     setMoverThreshold(data.mover_threshold ?? 3);
@@ -1366,6 +1368,7 @@ function NotificationsTab() {
     saveMutation.mutate({
       webhook_url: webhookURL || undefined,
       enabled,
+      drawdown_alert_enabled: drawdownEnabled,
       drawdown_threshold: threshold,
       mover_alert_enabled: moverEnabled,
       mover_threshold: moverThreshold,
@@ -1385,6 +1388,16 @@ function NotificationsTab() {
     } catch (e: unknown) {
       setTestStatus('err');
       setTestError(e instanceof Error ? e.message : 'Test failed');
+    }
+  };
+
+  const handleTestAll = async () => {
+    setTestAllStatus('sending');
+    try {
+      await discordSettingsApi.testAll();
+      setTestAllStatus('ok');
+    } catch {
+      setTestAllStatus('err');
     }
   };
 
@@ -1452,38 +1465,10 @@ function NotificationsTab() {
             </div>
           </div>
 
-          {/* Drawdown threshold */}
-          <div className="space-y-1.5">
-            <Label className="text-xs font-medium">Drawdown Alert Threshold (%)</Label>
-            <div className="flex items-center gap-3">
-              <Input
-                type="number"
-                min={1}
-                max={50}
-                step={0.5}
-                value={threshold}
-                onChange={(e) => {
-                  const v = parseFloat(e.target.value);
-                  if (!isNaN(v) && v >= 1 && v <= 50) setThreshold(v);
-                }}
-                className="w-28 text-sm"
-              />
-              <p className="text-xs text-muted-foreground">
-                Alert when any fund or the total portfolio falls{' '}
-                <span className="font-semibold text-foreground">-{threshold}%</span> from its
-                all-time peak.
-              </p>
-            </div>
-          </div>
-
-          {/* Enable toggle */}
+          {/* Master enable toggle */}
           <div className="flex items-center justify-between rounded-xl border border-border/40 bg-muted/30 px-4 py-3">
             <div className="flex items-center gap-2">
-              {enabled ? (
-                <Bell className="size-4 text-emerald-500" />
-              ) : (
-                <BellOff className="size-4 text-muted-foreground" />
-              )}
+              <Bell className="size-4 text-emerald-500" />
               <span className="text-sm font-medium">
                 Alerts {enabled ? 'enabled' : 'disabled'}
               </span>
@@ -1505,10 +1490,20 @@ function NotificationsTab() {
             </button>
           </div>
 
-          {/* Additional alert toggles */}
-          <div className="space-y-2 border-t border-border/40 pt-3">
-            <p className="text-xs font-semibold text-muted-foreground">Additional Alert Types</p>
+          {/* Alert toggles */}
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-muted-foreground">Alert Types</p>
             {[
+              {
+                label: 'Drawdown alert',
+                desc: 'Alert when any fund or portfolio falls more than',
+                enabled: drawdownEnabled,
+                setEnabled: (v: boolean) => setDrawdownEnabled(v),
+                threshold: threshold,
+                setThreshold: (v: number) => { if (!isNaN(v) && v >= 1 && v <= 50) setThreshold(v); },
+                unit: '% from all-time peak',
+                min: 1, max: 50,
+              },
               {
                 label: 'Big daily mover',
                 desc: `Alert when any holding moves more than`,
@@ -1598,12 +1593,11 @@ function NotificationsTab() {
               )}
               Save
             </Button>
-            {data?.configured && (
-              <Button
+            <Button
                 size="sm"
                 variant="outline"
                 onClick={handleTest}
-                disabled={testStatus === 'sending'}
+                disabled={testStatus === 'sending' || (!data?.configured && !webhookURL)}
                 className="gap-1.5"
               >
                 {testStatus === 'sending' ? (
@@ -1613,7 +1607,20 @@ function NotificationsTab() {
                 )}
                 Send Test Message
               </Button>
-            )}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleTestAll}
+                disabled={testAllStatus === 'sending' || (!data?.configured && !webhookURL)}
+                className="gap-1.5"
+              >
+                {testAllStatus === 'sending' ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Send className="size-3.5" />
+                )}
+                Preview All Alerts
+              </Button>
           </div>
 
           {/* Feedback */}
@@ -1638,6 +1645,16 @@ function NotificationsTab() {
           {testStatus === 'err' && (
             <p className="flex items-center gap-1.5 text-xs text-destructive">
               <AlertCircle className="size-3.5" /> {testError}
+            </p>
+          )}
+          {testAllStatus === 'ok' && (
+            <p className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+              <CheckCircle2 className="size-3.5" /> All alert previews sent to Discord.
+            </p>
+          )}
+          {testAllStatus === 'err' && (
+            <p className="flex items-center gap-1.5 text-xs text-destructive">
+              <AlertCircle className="size-3.5" /> Failed to send preview alerts.
             </p>
           )}
         </div>

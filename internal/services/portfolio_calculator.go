@@ -31,22 +31,25 @@ type FilterParams struct {
 // --- Holding -----------------------------------------------------------------
 
 type HoldingInfo struct {
-	InstrumentID   int64    `json:"instrument_id"`
-	InstrumentName string   `json:"instrument_name"`
-	ISIN           *string  `json:"isin"`
-	AssetType      string   `json:"asset_type"`
-	Currency       string   `json:"currency"`
-	TotalUnits     float64  `json:"total_units"`
-	AvgBuyPrice    float64  `json:"avg_buy_price"`
-	InvestedAmount float64  `json:"invested_amount"`
-	CurrentPrice   *float64 `json:"current_price"`
-	LastPriceDate  *string  `json:"last_price_date"`  // ISO date string
-	LastFetchedAt  *string  `json:"last_fetched_at"` // ISO datetime string
-	CurrentValue   *float64 `json:"current_value"`
-	ProfitLoss     *float64 `json:"profit_loss"`
-	ProfitLossPct  *float64 `json:"profit_loss_percent"`
-	Platform       string   `json:"platform"`
-	Categories     []string `json:"categories"`
+	InstrumentID     int64    `json:"instrument_id"`
+	InstrumentName   string   `json:"instrument_name"`
+	ISIN             *string  `json:"isin"`
+	AssetType        string   `json:"asset_type"`
+	Currency         string   `json:"currency"`
+	TotalUnits       float64  `json:"total_units"`
+	AvgBuyPrice      float64  `json:"avg_buy_price"`
+	InvestedAmount   float64  `json:"invested_amount"`
+	CurrentPrice     *float64 `json:"current_price"`
+	LastPriceDate    *string  `json:"last_price_date"`
+	LastFetchedAt    *string  `json:"last_fetched_at"`
+	CurrentValue     *float64 `json:"current_value"`
+	ProfitLoss       *float64 `json:"profit_loss"`
+	ProfitLossPct    *float64 `json:"profit_loss_percent"`
+	Platform         string   `json:"platform"`
+	Categories       []string `json:"categories"`
+	GrowwSlug        *string  `json:"groww_slug"`
+	TickertapeSlug   *string  `json:"tickertape_slug"`
+	YahooSymbol      *string  `json:"yahoo_symbol"`
 }
 
 // fifoLot represents one purchase lot: remaining units and cost per unit.
@@ -157,18 +160,22 @@ func (c *PortfolioCalculator) Holdings(ctx context.Context, f FilterParams) ([]H
 
 	// Fetch instrument metadata + latest price in one query.
 	type instrRow struct {
-		id        int64
-		name      string
-		isin      *string
-		assetType string
-		currency  string
-		navPrice  *float64
-		priceDate *string
-		fetchedAt *time.Time
+		id             int64
+		name           string
+		isin           *string
+		assetType      string
+		currency       string
+		navPrice       *float64
+		priceDate      *string
+		fetchedAt      *time.Time
+		growwSlug      *string
+		tickertapeSlug *string
+		yahooSymbol    *string
 	}
 	irows, err := c.pool.Query(ctx, `
 		SELECT i.id, i.name, i.isin, i.asset_type, i.currency,
-		       lp.nav_price, lp.price_date::text, lp.fetched_at
+		       lp.nav_price, lp.price_date::text, lp.fetched_at,
+		       i.groww_slug, i.tickertape_slug, i.yahoo_symbol
 		  FROM instruments i
 		  LEFT JOIN LATERAL (
 		    SELECT nav_price::float, price_date, fetched_at
@@ -186,7 +193,7 @@ func (c *PortfolioCalculator) Holdings(ctx context.Context, f FilterParams) ([]H
 	for irows.Next() {
 		var r instrRow
 		if err := irows.Scan(&r.id, &r.name, &r.isin, &r.assetType, &r.currency,
-			&r.navPrice, &r.priceDate, &r.fetchedAt); err != nil {
+			&r.navPrice, &r.priceDate, &r.fetchedAt, &r.growwSlug, &r.tickertapeSlug, &r.yahooSymbol); err != nil {
 			return nil, err
 		}
 		instrMap[r.id] = r
@@ -239,6 +246,9 @@ func (c *PortfolioCalculator) Holdings(ctx context.Context, f FilterParams) ([]H
 			InvestedAmount: investedAmount,
 			Platform:       pos.platform,
 			Categories:     []string{},
+			GrowwSlug:      instr.growwSlug,
+			TickertapeSlug: instr.tickertapeSlug,
+			YahooSymbol:    instr.yahooSymbol,
 		}
 		if instr.priceDate != nil {
 			h.LastPriceDate = instr.priceDate

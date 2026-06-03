@@ -21,10 +21,11 @@ func NewDiscordSettingsHandler(pool *pgxpool.Pool) *DiscordSettingsHandler {
 }
 
 type discordSettingsResponse struct {
-	MaskedURL         string  `json:"masked_url"`
-	Enabled           bool    `json:"enabled"`
-	DrawdownThreshold float64 `json:"drawdown_threshold"`
-	Configured        bool    `json:"configured"`
+	MaskedURL            string  `json:"masked_url"`
+	Enabled              bool    `json:"enabled"`
+	DrawdownAlertEnabled bool    `json:"drawdown_alert_enabled"`
+	DrawdownThreshold    float64 `json:"drawdown_threshold"`
+	Configured           bool    `json:"configured"`
 	// Additional alert types
 	MoverAlertEnabled bool    `json:"mover_alert_enabled"`
 	MoverThreshold    float64 `json:"mover_threshold"`
@@ -35,9 +36,10 @@ type discordSettingsResponse struct {
 }
 
 type discordSettingsPutRequest struct {
-	WebhookURL        string  `json:"webhook_url"`
-	Enabled           bool    `json:"enabled"`
-	DrawdownThreshold float64 `json:"drawdown_threshold"`
+	WebhookURL           string  `json:"webhook_url"`
+	Enabled              bool    `json:"enabled"`
+	DrawdownAlertEnabled bool    `json:"drawdown_alert_enabled"`
+	DrawdownThreshold    float64 `json:"drawdown_threshold"`
 	// Additional alert types
 	MoverAlertEnabled bool    `json:"mover_alert_enabled"`
 	MoverThreshold    float64 `json:"mover_threshold"`
@@ -68,15 +70,16 @@ func (h *DiscordSettingsHandler) Put(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := &services.DiscordSettings{
-		WebhookURL:        req.WebhookURL,
-		Enabled:           req.Enabled,
-		DrawdownThreshold: req.DrawdownThreshold,
-		MoverAlertEnabled: req.MoverAlertEnabled,
-		MoverThreshold:    req.MoverThreshold,
-		ATHAlertEnabled:   req.ATHAlertEnabled,
-		LTCGAlertEnabled:  req.LTCGAlertEnabled,
-		LTCGThresholdPct:  req.LTCGThresholdPct,
-		MoodAlertEnabled:  req.MoodAlertEnabled,
+		WebhookURL:           req.WebhookURL,
+		Enabled:              req.Enabled,
+		DrawdownAlertEnabled: req.DrawdownAlertEnabled,
+		DrawdownThreshold:    req.DrawdownThreshold,
+		MoverAlertEnabled:    req.MoverAlertEnabled,
+		MoverThreshold:       req.MoverThreshold,
+		ATHAlertEnabled:      req.ATHAlertEnabled,
+		LTCGAlertEnabled:     req.LTCGAlertEnabled,
+		LTCGThresholdPct:     req.LTCGThresholdPct,
+		MoodAlertEnabled:     req.MoodAlertEnabled,
 	}
 	if err := h.svc.SaveSettings(r.Context(), cfg); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -99,6 +102,14 @@ func (h *DiscordSettingsHandler) Test(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "test message sent"})
 }
 
+func (h *DiscordSettingsHandler) TestAll(w http.ResponseWriter, r *http.Request) {
+	if err := h.svc.SendAllTestAlerts(r.Context()); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "all test alerts sent"})
+}
+
 func toDiscordResponse(cfg *services.DiscordSettings) discordSettingsResponse {
 	masked := ""
 	if cfg.WebhookURL != "" {
@@ -118,12 +129,13 @@ func toDiscordResponse(cfg *services.DiscordSettings) discordSettingsResponse {
 		lp = 80.0
 	}
 	return discordSettingsResponse{
-		MaskedURL:         masked,
-		Enabled:           cfg.Enabled,
-		DrawdownThreshold: cfg.DrawdownThreshold,
-		Configured:        cfg.WebhookURL != "",
-		MoverAlertEnabled: cfg.MoverAlertEnabled,
-		MoverThreshold:    mt,
+		MaskedURL:            masked,
+		Enabled:              cfg.Enabled,
+		DrawdownAlertEnabled: cfg.DrawdownAlertEnabled,
+		DrawdownThreshold:    cfg.DrawdownThreshold,
+		Configured:           cfg.WebhookURL != "",
+		MoverAlertEnabled:    cfg.MoverAlertEnabled,
+		MoverThreshold:       mt,
 		ATHAlertEnabled:   cfg.ATHAlertEnabled,
 		LTCGAlertEnabled:  cfg.LTCGAlertEnabled,
 		LTCGThresholdPct:  lp,

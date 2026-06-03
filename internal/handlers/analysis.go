@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,11 +31,15 @@ func (h *AnalysisHandler) Run(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "symbol required")
 		return
 	}
+	slog.Info("analysis run started", "symbol", req.Symbol)
+	start := time.Now()
 	fa, err := h.svc.Analyze(r.Context(), req.Symbol)
 	if err != nil {
+		slog.Error("analysis run failed", "symbol", req.Symbol, "elapsed", time.Since(start).Round(time.Millisecond), "err", err)
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	slog.Info("analysis run done", "symbol", req.Symbol, "elapsed", time.Since(start).Round(time.Millisecond), "score", fa.CompositeScore, "rec", fa.Recommendation)
 	writeJSON(w, http.StatusOK, fa)
 }
 

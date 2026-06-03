@@ -59,6 +59,11 @@ type FullAnalysis struct {
 	VolumeCV        float64 `json:"volume_cv"`         // coefficient of variation — erraticism
 	VolumePattern   string  `json:"volume_pattern"`    // AI-generated pattern description
 
+	// Sector-relative context (computed, not persisted)
+	RelativeRank   int     `json:"relative_rank"`    // 0–100, stock alpha vs sector
+	SectorBearish  bool    `json:"sector_bearish"`   // sector 1Y return is negative
+	SectorReturn1Y float64 `json:"sector_return_1y"` // benchmark 1Y return for this sector
+
 	// Signals
 	BuySignals     []string `json:"buy_signals"`
 	CautionSignals []string `json:"caution_signals"`
@@ -113,13 +118,18 @@ func (s *AnalysisService) Analyze(ctx context.Context, symbol string) (*FullAnal
 		}
 	}
 	fundScore := computeStockScore(fund)
+	setStockContext(fund) // populate RelativeRank and SectorBearish
 
 	// 4. Composite score: 60% fundamental + 40% technical.
 	composite := roundF(float64(fundScore)*0.6+float64(tech.Score)*0.4, 0)
 	compositeInt := int(composite)
 
-	// 5. Derive recommendation label.
-	rec := scoreToRecommendation(compositeInt)
+	// 5. Derive recommendation label, applying sector-relative context.
+	assetCtx := AssetContext{
+		RelativeRank:    fund.RelativeRank,
+		CategoryBearish: fund.SectorBearish,
+	}
+	rec := scoreToRecommendation(compositeInt, assetCtx)
 
 	// 6. Build signal narratives (including liquidity and AI volume pattern).
 	buys, cautions := buildSignals(fund, tech)
@@ -175,6 +185,10 @@ func (s *AnalysisService) Analyze(ctx context.Context, symbol string) (*FullAnal
 		CautionSignals: cautions,
 		PriceHistory:   history,
 		AnalyzedAt:     time.Now(),
+
+		RelativeRank:   fund.RelativeRank,
+		SectorBearish:  fund.SectorBearish,
+		SectorReturn1Y: sectorReturn1YFor(fund.Sector),
 	}
 
 	if err := s.persist(ctx, fa, fund); err != nil {
@@ -718,6 +732,22 @@ func fetchYahooBalanceSheet(ctx context.Context, client *http.Client, symbol, cr
 // ─── Signal narrative builder ─────────────────────────────────────────────────
 
 func buildSignals(fund *StockMetrics, tech TechnicalResult) (buys, cautions []string) {
+	// Sector-relative return signal — always show context vs sector benchmark.
+	if fund.Return1YPct != 0 {
+		bench := sectorReturn1YFor(fund.Sector)
+		alpha := fund.Return1YPct - bench
+		switch {
+		case alpha >= 10:
+			buys = append(buys, fmt.Sprintf("Outperforming sector by %.1f%% (stock +%.1f%% vs sector +%.1f%% 1Y)", alpha, fund.Return1YPct, bench))
+		case alpha >= 3:
+			buys = append(buys, fmt.Sprintf("Ahead of sector benchmark (stock +%.1f%% vs sector +%.1f%% 1Y)", fund.Return1YPct, bench))
+		case alpha <= -10:
+			cautions = append(cautions, fmt.Sprintf("Lagging sector by %.1f%% (stock %.1f%% vs sector +%.1f%% 1Y)", -alpha, fund.Return1YPct, bench))
+		case alpha <= -3:
+			cautions = append(cautions, fmt.Sprintf("Underperforming sector benchmark (stock %.1f%% vs sector +%.1f%% 1Y)", fund.Return1YPct, bench))
+		}
+	}
+
 	// Fundamental buy signals
 	if fund.TrailingPE > 0 {
 		med := sectorMedianPE(fund.Sector)
@@ -797,20 +827,47 @@ func buildSignals(fund *StockMetrics, tech TechnicalResult) (buys, cautions []st
 	return buys, cautions
 }
 
-// scoreToRecommendation maps 0–100 composite to label.
-func scoreToRecommendation(score int) string {
+// scoreToRecommendation maps 0–100 composite score to a recommendation label,
+// applying sector-relative context so a stock that is outperforming its sector
+// is not downgraded to REDUCE/SELL just because the absolute score is depressed
+// by a broad market downturn.
+//
+// Guard rails (mirror the logic in scoreToAction for the holdings signal):
+//   - Sector outperformer (RelativeRank ≥ 65): floor is HOLD
+//   - Sector bearish AND outperformer (RelativeRank ≥ 65): floor stays at HOLD
+//     (the whole sector is down; exiting adds no value)
+func scoreToRecommendation(score int, ctx AssetContext) string {
+	var label string
 	switch {
 	case score >= 78:
-		return "STRONG_BUY"
+		label = "STRONG_BUY"
 	case score >= 63:
-		return "BUY"
+		label = "BUY"
 	case score >= 48:
-		return "ACCUMULATE"
+		label = "ACCUMULATE"
 	case score >= 35:
-		return "HOLD"
+		label = "HOLD"
 	case score >= 20:
-		return "REDUCE"
+		label = "REDUCE"
 	default:
-		return "SELL"
+		label = "SELL"
 	}
+
+	// Protect sector outperformers from REDUCE/SELL in bear environments.
+	if ctx.RelativeRank >= 65 && (label == "REDUCE" || label == "SELL") {
+		return "HOLD"
+	}
+	// In a bearish sector, don't push below ACCUMULATE — there may be nowhere better to rotate.
+	if ctx.CategoryBearish && label == "REDUCE" {
+		return "ACCUMULATE"
+	}
+	return label
+}
+
+// sectorReturn1YFor looks up the approximate 1Y sector return for display purposes.
+func sectorReturn1YFor(sector string) float64 {
+	if v, ok := sectorReturn1Y[sector]; ok {
+		return v
+	}
+	return 12.0 // broad market default
 }

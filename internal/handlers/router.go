@@ -157,6 +157,9 @@ func NewRouter(deps Deps) http.Handler {
 				r.With(signalH.withLongTimeout).Post("/holdings", signalH.AnalyseHoldings)
 				r.With(signalH.withLongTimeout).Post("/analyse", signalH.AnalyseStock)
 				r.Get("/instrument-metrics/{instrument_id}", signalH.GetInstrumentMetrics)
+				r.Put("/instrument-metrics/{instrument_id}/groww-slug", signalH.SaveGrowwSlug)
+				r.Put("/instrument-metrics/{instrument_id}/tickertape-slug", signalH.SaveTickertapeSlug)
+			r.With(signalH.withLongTimeout).Get("/instrument-metrics/{instrument_id}/financials", signalH.GetStockFinancials)
 				r.With(signalH.withLongTimeout).Post("/refresh-scores", signalH.RefreshScores)
 				r.Get("/mf-metrics/{instrument_id}", signalH.GetMFMetrics) // backward compat
 			})
@@ -193,6 +196,7 @@ func NewRouter(deps Deps) http.Handler {
 				r.Get("/discord", discordH.Get)
 				r.Put("/discord", discordH.Put)
 				r.Post("/discord/test", discordH.Test)
+				r.Post("/discord/test-all", discordH.TestAll)
 			})
 
 				r.Route("/analysis", func(r chi.Router) {

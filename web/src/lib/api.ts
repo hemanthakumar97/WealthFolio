@@ -167,6 +167,9 @@ export interface HoldingInfo {
   profit_loss_percent: number | null;
   platform: string;
   categories: string[];
+  groww_slug: string | null;
+  tickertape_slug: string | null;
+  yahoo_symbol: string | null;
 }
 
 export interface ClosedPositionInfo {
@@ -288,7 +291,7 @@ export const ASSET_TYPES = [
 
 // --- AI Signal ---
 
-export type SignalAction = 'BUY_MORE' | 'HOLD' | 'SWITCH' | 'PARTIAL_SELL' | 'BOOK_PROFIT';
+export type SignalAction = 'BUY_MORE' | 'HOLD' | 'PARTIAL_SELL' | 'BOOK_PROFIT';
 
 export interface HoldingSignal {
   instrument_id: number;
@@ -297,7 +300,9 @@ export interface HoldingSignal {
   confidence: number;
   reason: string;
   key_points: string[];         // 3–5 data-backed bullet points from AI
-  qualitative_note: string;     // AI qualitative context about the fund/stock
+  qualitative_note: string;
+  recent_events?: string;       // news/events from AI training knowledge
+  events_impact?: 'positive' | 'negative' | 'neutral' | '';
   tax_note: string;
   zero1_score?: number;
 }
@@ -310,7 +315,22 @@ export interface HoldingsSignalsResult {
 
 type ChartPoint = { d: string; v: number };
 
+export interface MFPillarScores {
+  return_quality: number;
+  risk_adjusted: number;
+  consistency: number;
+  fund_ops: number;
+  validation: number;
+  return_quality_max: number;
+  risk_adjusted_max: number;
+  consistency_max: number;
+  fund_ops_max: number;
+  validation_max: number;
+}
+
 export interface MFMetrics {
+  amfi_code: string;
+  scheme_name: string;
   category: string;
   rolling_1y_avg_pct: number;
   rolling_3y_avg_pct: number;
@@ -323,16 +343,67 @@ export interface MFMetrics {
   beta: number;
   aum_cr: number;
   ter_pct: number;
+  ter_source?: string;  // "live:groww" | "hardcoded" | ""
+  beta_source?: string; // "live:groww" | "hardcoded" | ""
+  // Groww live metrics
+  groww_data_ok: boolean;
+  groww_slug?: string;
+  groww_rating: number;
+  exit_load?: string;
+  alpha: number;
+  sortino_ratio: number;
+  groww_sharpe: number;
+  groww_std_dev: number;
+  cat_return_1y: number;
+  cat_return_3y: number;
+  cat_return_5y: number;
+  cat_rank_1y: number;
+  cat_rank_3y: number;
+  cat_rank_5y: number;
   zero1_score: number;
   available_max: number;
   data_gaps?: string[];
+  pillars?: MFPillarScores;
   nav_history: ChartPoint[];
   roll_1y_series: ChartPoint[];
   drawdown_series: ChartPoint[];
 }
 
-// ETFMetrics has the same shape as MFMetrics (same 6-metric Zero1 framework).
-export type ETFMetrics = MFMetrics;
+export interface ETFMetrics extends MFMetrics {
+  symbol: string;
+  tracking_error_pct?: number;
+  tickertape_slug?: string;
+  cat_ter_pct?: number;
+  cat_tracking_error_pct?: number;
+  ttm_pe?: number;
+  pb_ratio?: number;
+  div_yield?: number;
+  ind_pe?: number;
+  ind_pb?: number;
+  ind_dy?: number;
+  beta_source?: string;
+}
+
+export interface StockFinancials {
+  years: StockFinancialYear[];
+  promoter_pct: number;
+  fii_pct: number;
+  dii_pct: number;
+  public_pct: number;
+}
+
+export interface StockFinancialYear {
+  year: string;
+  revenue_cr: number;
+  net_income_cr: number;
+  ebitda_cr?: number;
+  op_cf_cr?: number;
+  capex_cr?: number;
+  free_cf_cr?: number;
+  total_debt_cr?: number;
+  cash_cr?: number;
+  equity_cr?: number;
+}
 
 export interface StockMetrics {
   symbol: string;
@@ -368,12 +439,20 @@ export interface StockMetrics {
   max_drawdown_3y_pct: number;
   price_history: ChartPoint[];
   drawdown_series: ChartPoint[];
+  sector_pe?: number;
+  sector_pb?: number;
+  sector_div_yield?: number;
+  financials?: StockFinancialYear[];
+  promoter_pct?: number;
+  fii_pct?: number;
+  dii_pct?: number;
+  public_pct?: number;
 }
 
 export type InstrumentMetricsResponse =
-  | { kind: 'mf'; metrics: MFMetrics }
-  | { kind: 'etf'; metrics: ETFMetrics }
-  | { kind: 'stock'; metrics: StockMetrics };
+  | { kind: 'mf';    computed_at: string; sources: Record<string, string>; metrics: MFMetrics }
+  | { kind: 'etf';   computed_at: string; sources: Record<string, string>; metrics: ETFMetrics }
+  | { kind: 'stock'; computed_at: string; sources: Record<string, string>; metrics: StockMetrics };
 
 export const signalApi = {
   loadHoldings: (riskProfile: string) =>
@@ -383,10 +462,23 @@ export const signalApi = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  getInstrumentMetrics: (instrumentId: number) =>
-    request<InstrumentMetricsResponse>(`/api/ai/signal/instrument-metrics/${instrumentId}`),
-  refreshScores: () =>
-    request<{ total: number; success: number; errors?: string[] }>('/api/ai/signal/refresh-scores', { method: 'POST' }),
+  getInstrumentMetrics: (instrumentId: number, force = false) =>
+    request<InstrumentMetricsResponse>(`/api/ai/signal/instrument-metrics/${instrumentId}${force ? '?force=true' : ''}`),
+  getStockFinancials: (instrumentId: number) =>
+    request<StockFinancials>(`/api/ai/signal/instrument-metrics/${instrumentId}/financials`),
+  saveGrowwSlug: (instrumentId: number, slug: string) =>
+    request<{ slug: string }>(`/api/ai/signal/instrument-metrics/${instrumentId}/groww-slug`, {
+      method: 'PUT', body: JSON.stringify({ slug }),
+    }),
+  saveTickertapeSlug: (instrumentId: number, slug: string) =>
+    request<{ slug: string }>(`/api/ai/signal/instrument-metrics/${instrumentId}/tickertape-slug`, {
+      method: 'PUT', body: JSON.stringify({ slug }),
+    }),
+  refreshScores: (profile?: { risk_profile: string; goal?: string; horizon?: string }) =>
+    request<{ total: number; success: number; errors?: string[]; signals_generated: boolean; signal_error?: string }>(
+      '/api/ai/signal/refresh-scores',
+      { method: 'POST', body: JSON.stringify(profile ?? {}), headers: { 'Content-Type': 'application/json' } }
+    ),
   getMFMetrics: (instrumentId: number) =>
     request<MFMetrics>(`/api/ai/signal/mf-metrics/${instrumentId}`),
 };
@@ -771,6 +863,7 @@ export interface DryRunResult {
 export interface DiscordSettings {
   masked_url: string;
   enabled: boolean;
+  drawdown_alert_enabled: boolean;
   drawdown_threshold: number;
   configured: boolean;
   mover_alert_enabled: boolean;
@@ -790,6 +883,8 @@ export const discordSettingsApi = {
     }),
   test: () =>
     request<{ message: string }>('/api/settings/discord/test', { method: 'POST' }),
+  testAll: () =>
+    request<{ message: string }>('/api/settings/discord/test-all', { method: 'POST' }),
 };
 
 // --- Stock Analysis ---

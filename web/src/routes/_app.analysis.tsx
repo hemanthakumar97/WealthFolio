@@ -21,7 +21,6 @@ import {
 import { analysisApi, settingsApi, type StockAnalysis } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { usePrivacy } from '@/lib/privacy';
 
@@ -119,7 +118,6 @@ function WatchlistItem({
   onRemove: () => void;
 }) {
   const rec = REC_CONFIG[fa.recommendation] ?? REC_CONFIG.NOT_ANALYZED;
-  const Icon = rec.icon;
   return (
     <button
       onClick={onClick}
@@ -154,7 +152,6 @@ function WatchlistItem({
 
 function AnalysisPanel({ symbol }: { symbol: string }) {
   const { masked } = usePrivacy();
-  const [running, setRunning] = useState(false);
 
   const { data: fa, refetch, isLoading } = useQuery<StockAnalysis>({
     queryKey: ['analysis', symbol],
@@ -167,10 +164,7 @@ function AnalysisPanel({ symbol }: { symbol: string }) {
     onSuccess: () => refetch(),
   });
 
-  const handleRun = async () => {
-    setRunning(true);
-    try { await runMutation.mutateAsync(); } finally { setRunning(false); }
-  };
+  const isRunning = runMutation.isPending;
 
   if (isLoading) {
     return (
@@ -181,19 +175,56 @@ function AnalysisPanel({ symbol }: { symbol: string }) {
     );
   }
 
+  // First-time analysis — no cached data yet, show full-panel spinner
+  if (isRunning && !fa) {
+    return (
+      <div className="flex flex-col items-center gap-4 py-16 text-muted-foreground">
+        <Loader2 className="size-8 animate-spin text-primary" />
+        <div className="text-center space-y-1">
+          <p className="text-sm font-medium text-foreground">Running analysis…</p>
+          <p className="text-xs">Fetching fundamentals + price history from Yahoo Finance</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-lg font-bold">{fa?.company_name || symbol}</h2>
-          <p className="text-xs text-muted-foreground">{symbol}{fa?.sector ? ` · ${fa.sector}` : ''}</p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-xs text-muted-foreground">{symbol}{fa?.sector ? ` · ${fa.sector}` : ''}</p>
+            {fa?.analyzed_at && !isRunning && (
+              <span className="text-xs text-muted-foreground/60">
+                · Updated {new Date(fa.analyzed_at).toLocaleString('en-IN', {
+                  day: 'numeric', month: 'short', year: 'numeric',
+                  hour: '2-digit', minute: '2-digit',
+                })}
+              </span>
+            )}
+          </div>
         </div>
-        <Button size="sm" variant="outline" onClick={handleRun} disabled={running} className="gap-1.5 shrink-0">
-          {running ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-          {fa ? 'Re-analyse' : 'Analyse Now'}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => runMutation.mutate()}
+          disabled={isRunning}
+          className="gap-1.5 shrink-0"
+        >
+          {isRunning ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+          {isRunning ? 'Analysing…' : fa ? 'Re-analyse' : 'Analyse Now'}
         </Button>
       </div>
+
+      {/* Re-analysis progress banner (shown only when updating existing data) */}
+      {isRunning && fa && (
+        <div className="flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5 text-xs text-primary">
+          <Loader2 className="size-3.5 animate-spin shrink-0" />
+          <span>Fetching fresh data from Yahoo Finance — this takes 10–20 seconds…</span>
+        </div>
+      )}
 
       {runMutation.isError && (
         <p className="flex items-center gap-1.5 text-xs text-destructive">
@@ -204,6 +235,39 @@ function AnalysisPanel({ symbol }: { symbol: string }) {
 
       {fa && (
         <>
+          {/* Volume danger override banner */}
+          {(fa.volume_cv > 2 || fa.zero_volume_pct > 30 || fa.avg_turnover_30d < 1 ||
+            /manipulat|pump|dump|illiquid|suspend|severe/.test((fa.volume_pattern || '').toLowerCase())) && (
+            <div className="rounded-xl border border-red-500/40 bg-red-500/8 px-4 py-3 flex items-start gap-3">
+              <AlertCircle className="size-4 text-red-500 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-xs font-bold text-red-600 dark:text-red-400 mb-1">⚠ Liquidity Risk — Exercise Extreme Caution</p>
+                <div className="space-y-0.5">
+                  {fa.volume_cv > 2 && <p className="text-xs text-red-600/80 dark:text-red-400/80">• Highly erratic volume (CV {fa.volume_cv.toFixed(1)}) — pattern consistent with manipulation</p>}
+                  {fa.zero_volume_pct > 30 && <p className="text-xs text-red-600/80 dark:text-red-400/80">• {fa.zero_volume_pct.toFixed(0)}% of trading days had zero volume — severely illiquid</p>}
+                  {fa.avg_turnover_30d < 1 && <p className="text-xs text-red-600/80 dark:text-red-400/80">• Avg daily turnover ₹{fa.avg_turnover_30d.toFixed(2)} Cr — exit may be very difficult</p>}
+                  {/manipulat|pump|dump/.test((fa.volume_pattern || '').toLowerCase()) && <p className="text-xs text-red-600/80 dark:text-red-400/80">• AI detected potential manipulation pattern in volume data</p>}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Buy reasons at top when recommendation is positive */}
+          {['STRONG_BUY', 'BUY', 'ACCUMULATE'].includes(fa.recommendation) && fa.buy_signals?.length > 0 && (
+            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
+              <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400 mb-2 flex items-center gap-1.5">
+                <CheckCircle2 className="size-3.5" /> Why {fa.recommendation.replace('_', ' ')} — {fa.buy_signals.length} reason{fa.buy_signals.length > 1 ? 's' : ''}
+              </p>
+              <div className="space-y-1">
+                {fa.buy_signals.map((s, i) => (
+                  <p key={i} className="text-xs text-emerald-700 dark:text-emerald-300 flex items-start gap-1.5">
+                    <span className="font-black mt-0.5 shrink-0">•</span>{s}
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Score + recommendation */}
           <div className="rounded-2xl border border-border/40 bg-card/40 p-4">
             <div className="flex items-center gap-6 mb-4">
@@ -297,97 +361,114 @@ function AnalysisPanel({ symbol }: { symbol: string }) {
             </div>
 
             {/* Liquidity */}
-            {fa.avg_volume_30d > 0 && (
-              <div className="space-y-1">
-                <p className="text-xs font-semibold text-foreground/70 uppercase tracking-wide">Liquidity (30-day avg)</p>
-                <div className="rounded-xl border border-border/40 bg-muted/20 px-3 divide-y divide-border/30">
-                  <div className="flex items-center justify-between py-1.5">
-                    <span className="text-xs text-muted-foreground">Daily Volume</span>
-                    <span className={cn(
-                      'text-xs font-semibold tabular-nums',
-                      fa.avg_volume_30d > 500000 ? 'text-emerald-500' : fa.avg_volume_30d < 50000 ? 'text-red-500' : 'text-foreground'
-                    )}>
-                      {fa.avg_volume_30d >= 1e7
-                        ? `${(fa.avg_volume_30d / 1e7).toFixed(2)} Cr`
-                        : fa.avg_volume_30d >= 1e5
-                          ? `${(fa.avg_volume_30d / 1e5).toFixed(1)} L`
-                          : fa.avg_volume_30d.toLocaleString('en-IN')}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between py-1.5">
-                    <span className="text-xs text-muted-foreground">Daily Turnover</span>
-                    <span className={cn(
-                      'text-xs font-semibold tabular-nums',
-                      fa.avg_turnover_30d > 50 ? 'text-emerald-500' : fa.avg_turnover_30d < 1 ? 'text-red-500' : 'text-foreground'
-                    )}>
-                      ₹{fa.avg_turnover_30d >= 1000
-                        ? `${(fa.avg_turnover_30d / 1000).toFixed(1)}K Cr`
-                        : `${fa.avg_turnover_30d.toFixed(1)} Cr`}
-                    </span>
-                  </div>
-                  {fa.zero_volume_pct > 0 && (
+            {fa.avg_volume_30d > 0 && (() => {
+              const volDanger = fa.volume_cv > 2 || fa.zero_volume_pct > 30 || fa.avg_turnover_30d < 1;
+              const volWarn = fa.volume_cv > 1 || fa.zero_volume_pct > 10 || (fa.avg_turnover_30d >= 1 && fa.avg_turnover_30d < 5);
+              const patternLower = (fa.volume_pattern || '').toLowerCase();
+              const patternDanger = /manipulat|pump|dump|illiquid|suspend|severe|risk/.test(patternLower);
+              const patternGood = /consistent|institutional|accumulat|stable|healthy|strong/.test(patternLower);
+              const noteColor = patternDanger || volDanger
+                ? 'border-red-500/30 bg-red-500/5 text-red-600 dark:text-red-400'
+                : patternGood && !volWarn
+                  ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400'
+                  : 'border-blue-500/30 bg-blue-500/5 text-blue-700 dark:text-blue-400';
+              const noteIcon = patternDanger || volDanger ? '⚠' : patternGood && !volWarn ? '✓' : 'ℹ';
+              return (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold text-foreground/70 uppercase tracking-wide">Liquidity (30-day avg)</p>
+                  <div className="rounded-xl border border-border/40 bg-muted/20 px-3 divide-y divide-border/30">
                     <div className="flex items-center justify-between py-1.5">
-                      <span className="text-xs text-muted-foreground">Zero-volume Days</span>
+                      <span className="text-xs text-muted-foreground">Daily Volume</span>
                       <span className={cn('text-xs font-semibold tabular-nums',
-                        fa.zero_volume_pct > 30 ? 'text-red-500' : fa.zero_volume_pct > 10 ? 'text-amber-500' : 'text-foreground'
-                      )}>{fa.zero_volume_pct.toFixed(0)}%</span>
-                    </div>
-                  )}
-                  {fa.volume_cv > 0 && (
-                    <div className="flex items-center justify-between py-1.5">
-                      <span className="text-xs text-muted-foreground">Volume Consistency</span>
-                      <span className={cn('text-xs font-semibold tabular-nums',
-                        fa.volume_cv > 2 ? 'text-red-500' : fa.volume_cv > 1 ? 'text-amber-500' : 'text-emerald-500'
+                        fa.avg_volume_30d > 500000 ? 'text-emerald-500' : fa.avg_volume_30d < 50000 ? 'text-red-500' : 'text-foreground'
                       )}>
-                        {fa.volume_cv > 2 ? 'Erratic' : fa.volume_cv > 1 ? 'Inconsistent' : 'Consistent'} ({fa.volume_cv.toFixed(1)})
+                        {fa.avg_volume_30d >= 1e7
+                          ? `${(fa.avg_volume_30d / 1e7).toFixed(2)} Cr`
+                          : fa.avg_volume_30d >= 1e5
+                            ? `${(fa.avg_volume_30d / 1e5).toFixed(1)} L`
+                            : fa.avg_volume_30d.toLocaleString('en-IN')}
                       </span>
                     </div>
+                    <div className="flex items-center justify-between py-1.5">
+                      <span className="text-xs text-muted-foreground">Daily Turnover</span>
+                      <span className={cn('text-xs font-semibold tabular-nums',
+                        fa.avg_turnover_30d > 50 ? 'text-emerald-500' : fa.avg_turnover_30d < 1 ? 'text-red-500' : 'text-foreground'
+                      )}>
+                        ₹{fa.avg_turnover_30d >= 1000
+                          ? `${(fa.avg_turnover_30d / 1000).toFixed(1)}K Cr`
+                          : `${fa.avg_turnover_30d.toFixed(1)} Cr`}
+                      </span>
+                    </div>
+                    {fa.zero_volume_pct > 0 && (
+                      <div className="flex items-center justify-between py-1.5">
+                        <span className="text-xs text-muted-foreground">Zero-volume Days</span>
+                        <span className={cn('text-xs font-semibold tabular-nums',
+                          fa.zero_volume_pct > 30 ? 'text-red-500' : fa.zero_volume_pct > 10 ? 'text-amber-500' : 'text-foreground'
+                        )}>{fa.zero_volume_pct.toFixed(0)}% of trading days</span>
+                      </div>
+                    )}
+                    {fa.volume_cv > 0 && (
+                      <div className="flex items-center justify-between py-1.5">
+                        <span className="text-xs text-muted-foreground">Volume Pattern</span>
+                        <span className={cn('text-xs font-semibold',
+                          fa.volume_cv > 2 ? 'text-red-500' : fa.volume_cv > 1 ? 'text-amber-500' : 'text-emerald-500'
+                        )}>
+                          {fa.volume_cv > 2 ? '🔴 Highly erratic' : fa.volume_cv > 1 ? '🟡 Inconsistent' : '🟢 Consistent'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  {fa.volume_pattern && (
+                    <div className={cn('rounded-xl border px-3 py-2.5 flex items-start gap-2', noteColor)}>
+                      <span className="text-sm mt-0.5 shrink-0">{noteIcon}</span>
+                      <p className="text-xs font-medium leading-relaxed">{fa.volume_pattern.replace(/^["{\s]+|["}]+$/g, '').replace(/^"?analysis"?\s*:\s*"?/, '').replace(/"$/, '')}</p>
+                    </div>
                   )}
                 </div>
-              {fa.volume_pattern && (
-                <p className="mt-1.5 text-[11px] text-muted-foreground italic px-1">{fa.volume_pattern}</p>
-              )}
-              </div>
-            )}
+              );
+            })()}
           </div>
 
-          {/* Buy / Caution signals */}
-          {(fa.buy_signals?.length > 0 || fa.caution_signals?.length > 0) && (
-            <div className="grid grid-cols-2 gap-3">
-              {fa.buy_signals?.length > 0 && (
-                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 space-y-1.5">
-                  <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400 mb-2">
-                    <CheckCircle2 className="size-3.5" /> Buy Signals ({fa.buy_signals.length})
+          {/* Caution signals (buy signals shown at top for BUY/ACCUMULATE, here for all other cases) */}
+          {(() => {
+            const isPositive = ['STRONG_BUY', 'BUY', 'ACCUMULATE'].includes(fa.recommendation);
+            const showBuys = !isPositive && fa.buy_signals?.length > 0;
+            const showCautions = fa.caution_signals?.length > 0;
+            if (!showBuys && !showCautions) return null;
+            return (
+              <div className={cn('grid gap-3', showBuys && showCautions ? 'grid-cols-2' : 'grid-cols-1')}>
+                {showBuys && (
+                  <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400 mb-2">
+                      <CheckCircle2 className="size-3.5" /> Buy Signals ({fa.buy_signals.length})
+                    </div>
+                    {fa.buy_signals.map((s, i) => (
+                      <p key={i} className="text-xs text-muted-foreground flex items-start gap-1.5">
+                        <span className="select-none font-black text-emerald-500 mt-0.5">•</span>{s}
+                      </p>
+                    ))}
                   </div>
-                  {fa.buy_signals.map((s, i) => (
-                    <p key={i} className="text-xs text-muted-foreground flex items-start gap-1.5">
-                      <span className="select-none font-black text-emerald-500 mt-0.5">•</span>{s}
-                    </p>
-                  ))}
-                </div>
-              )}
-              {fa.caution_signals?.length > 0 && (
-                <div className="rounded-xl border border-orange-500/20 bg-orange-500/5 p-3 space-y-1.5">
-                  <div className="flex items-center gap-1.5 text-xs font-semibold text-orange-600 dark:text-orange-400 mb-2">
-                    <AlertCircle className="size-3.5" /> Caution Signals ({fa.caution_signals.length})
+                )}
+                {showCautions && (
+                  <div className="rounded-xl border border-orange-500/20 bg-orange-500/5 p-3 space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-orange-600 dark:text-orange-400 mb-2">
+                      <AlertCircle className="size-3.5" /> Caution Signals ({fa.caution_signals.length})
+                    </div>
+                    {fa.caution_signals.map((s, i) => (
+                      <p key={i} className="text-xs text-muted-foreground flex items-start gap-1.5">
+                        <span className="select-none font-black text-orange-500 mt-0.5">•</span>{s}
+                      </p>
+                    ))}
                   </div>
-                  {fa.caution_signals.map((s, i) => (
-                    <p key={i} className="text-xs text-muted-foreground flex items-start gap-1.5">
-                      <span className="select-none font-black text-orange-500 mt-0.5">•</span>{s}
-                    </p>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+                )}
+              </div>
+            );
+          })()}
 
-          <p className="text-right text-xs text-muted-foreground">
-            Analysed {new Date(fa.analyzed_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-          </p>
         </>
       )}
 
-      {!fa && !running && (
+      {!fa && !isRunning && (
         <div className="rounded-xl border border-dashed border-border/40 p-8 text-center text-sm text-muted-foreground">
           No analysis yet. Click <span className="font-semibold text-foreground">Analyse Now</span> to run fundamental + technical analysis.
         </div>

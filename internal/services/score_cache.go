@@ -62,22 +62,49 @@ func SaveScore(ctx context.Context, pool *pgxpool.Pool, instrumentID int64, kind
 
 type activeInstrument struct {
 	ID          int64
+	Name        string
 	AssetType   string
 	AMFICode    string
 	YahooSymbol string
+	GrowwSlug   string
 }
 
-// LoadActiveInstruments returns all instruments that have at least one active holding.
+// RefreshProgressEvent is emitted by RefreshAllScores as each fund is processed.
+type RefreshProgressEvent struct {
+	Type      string `json:"type"`                // fund_start | fund_done | fund_error | scores_done | ai_start | ai_done
+	ID        int64  `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	AssetType string `json:"asset_type,omitempty"`
+	Score     int    `json:"score,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Success   int    `json:"success,omitempty"`
+	Total     int    `json:"total,omitempty"`
+}
+
+// LoadActiveInstruments returns instruments with net-positive holdings — mirrors the
+// filter used in the /signal page (total units >= 0.5, cost basis > 0).
 func LoadActiveInstruments(ctx context.Context, pool *pgxpool.Pool) ([]activeInstrument, error) {
 	rows, err := pool.Query(ctx, `
-		SELECT DISTINCT i.id,
+		SELECT i.id,
+		       COALESCE(i.name,''),
 		       COALESCE(i.asset_type,''),
 		       COALESCE(i.amfi_code,''),
-		       COALESCE(i.yahoo_symbol,'')
-		  FROM transactions t
-		  JOIN instruments i ON t.instrument_id = i.id
-		 WHERE t.transaction_type IN ('BUY','SWITCH_IN','SELL','SWITCH_OUT','BONUS')
-		   AND i.asset_type IN ('MF','ETF','STOCK','US_FUND','METAL','GOLD')
+		       COALESCE(i.yahoo_symbol,''),
+		       COALESCE(i.groww_slug,'')
+		  FROM instruments i
+		 WHERE i.asset_type IN ('MF','ETF','STOCK','US_FUND','METAL','GOLD')
+		   AND EXISTS (
+		         SELECT 1 FROM transactions t
+		          WHERE t.instrument_id = i.id
+		            AND t.transaction_type IN ('BUY','SWITCH_IN','SELL','SWITCH_OUT','BONUS')
+		         HAVING
+		           SUM(CASE WHEN t.transaction_type IN ('BUY','SWITCH_IN','BONUS')
+		                    THEN t.quantity::float ELSE 0 END)
+		         - SUM(CASE WHEN t.transaction_type IN ('SELL','SWITCH_OUT')
+		                    THEN t.quantity::float ELSE 0 END) >= 0.5
+		           AND SUM(CASE WHEN t.transaction_type IN ('BUY','SWITCH_IN')
+		                        THEN t.amount::float ELSE 0 END) > 0
+		       )
 	`)
 	if err != nil {
 		return nil, err
@@ -87,7 +114,7 @@ func LoadActiveInstruments(ctx context.Context, pool *pgxpool.Pool) ([]activeIns
 	var out []activeInstrument
 	for rows.Next() {
 		var a activeInstrument
-		if err := rows.Scan(&a.ID, &a.AssetType, &a.AMFICode, &a.YahooSymbol); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.AssetType, &a.AMFICode, &a.YahooSymbol, &a.GrowwSlug); err != nil {
 			continue
 		}
 		out = append(out, a)
@@ -104,8 +131,17 @@ type RefreshResult struct {
 }
 
 // RefreshAllScores fetches and caches metrics for every active holding.
-// MFs are fetched concurrently; ETFs/stocks sequentially (Yahoo crumb constraint).
-func RefreshAllScores(ctx context.Context, pool *pgxpool.Pool, timeout time.Duration) RefreshResult {
+// All fetches run through a shared semaphore of 3 — avoids rate-limiting Groww/mfapi.
+// progressCh receives live events per fund; pass nil to skip progress streaming.
+func RefreshAllScores(ctx context.Context, pool *pgxpool.Pool, timeout time.Duration, progressCh chan<- RefreshProgressEvent) RefreshResult {
+	emit := func(e RefreshProgressEvent) {
+		if progressCh != nil {
+			select {
+			case progressCh <- e:
+			default: // never block if consumer is slow
+			}
+		}
+	}
 	instruments, err := LoadActiveInstruments(ctx, pool)
 	if err != nil {
 		return RefreshResult{Errors: []string{"load instruments: " + err.Error()}}
@@ -125,73 +161,71 @@ func RefreshAllScores(ctx context.Context, pool *pgxpool.Pool, timeout time.Dura
 		mu.Unlock()
 	}
 
-	// Split by type.
-	var mfWork, otherWork []activeInstrument
-	for _, a := range instruments {
-		if a.AssetType == "MF" && a.AMFICode != "" {
-			mfWork = append(mfWork, a)
-		} else {
-			otherWork = append(otherWork, a)
-		}
-	}
+	// Semaphore: max 3 concurrent fetches across all asset types.
+	sem := make(chan struct{}, 3)
+	var wg sync.WaitGroup
 
-	// MFs — concurrent batch fetch.
-	if len(mfWork) > 0 {
-		codes := make([]string, len(mfWork))
-		codeToID := make(map[string]int64, len(mfWork))
-		for i, a := range mfWork {
-			codes[i] = a.AMFICode
-			codeToID[a.AMFICode] = a.ID
-		}
-		metricsMap := FetchMFMetricsBatch(codes, timeout)
-		for code, m := range metricsMap {
-			id := codeToID[code]
-			if err := SaveScore(ctx, pool, id, "mf", m.Zero1Score, m); err != nil {
-				addErr(fmt.Sprintf("save MF %d: %s", id, err))
+	for _, a := range instruments {
+		wg.Add(1)
+		go func(inst activeInstrument) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			emit(RefreshProgressEvent{Type: "fund_start", ID: inst.ID, Name: inst.Name, AssetType: inst.AssetType})
+
+			var score int
+			var fetchErr error
+
+			switch {
+			case inst.AssetType == "MF" && inst.AMFICode != "":
+				m, err := FetchMFMetrics(inst.AMFICode, timeout, inst.GrowwSlug)
+				if err != nil {
+					fetchErr = err
+				} else if err := SaveScore(ctx, pool, inst.ID, "mf", m.Zero1Score, m); err != nil {
+					fetchErr = err
+				} else {
+					score = m.Zero1Score
+				}
+
+			case inst.AssetType == "ETF" || inst.AssetType == "US_FUND" ||
+				inst.AssetType == "METAL" || inst.AssetType == "GOLD" ||
+				(inst.AssetType == "MF" && inst.AMFICode == ""):
+				m, err := FetchETFMetrics(ctx, inst.ID, inst.YahooSymbol, pool, timeout)
+				if err != nil {
+					fetchErr = err
+				} else if err := SaveScore(ctx, pool, inst.ID, "etf", m.Zero1Score, m); err != nil {
+					fetchErr = err
+				} else {
+					score = m.Zero1Score
+				}
+
+			case inst.AssetType == "STOCK":
+				if inst.YahooSymbol == "" {
+					fetchErr = fmt.Errorf("no yahoo_symbol")
+				} else if m, err := FetchStockMetrics(ctx, inst.ID, inst.YahooSymbol, pool, timeout); err != nil {
+					fetchErr = err
+				} else if err := SaveScore(ctx, pool, inst.ID, "stock", m.Zero1Score, m); err != nil {
+					fetchErr = err
+				} else {
+					score = m.Zero1Score
+				}
+			}
+
+			if fetchErr != nil {
+				addErr(fmt.Sprintf("%s %d (%s): %s", inst.AssetType, inst.ID, inst.Name, fetchErr))
+				emit(RefreshProgressEvent{Type: "fund_error", ID: inst.ID, Name: inst.Name, AssetType: inst.AssetType, Error: fetchErr.Error()})
 			} else {
 				incSuccess()
+				emit(RefreshProgressEvent{Type: "fund_done", ID: inst.ID, Name: inst.Name, AssetType: inst.AssetType, Score: score})
 			}
-		}
-		// Count failures for MFs that didn't come back.
-		for _, a := range mfWork {
-			if _, ok := metricsMap[a.AMFICode]; !ok {
-				addErr(fmt.Sprintf("fetch MF %d (%s): no data returned", a.ID, a.AMFICode))
-			}
-		}
+		}(a)
 	}
+	wg.Wait()
 
-	// ETFs and stocks — sequential (Yahoo crumb is per-request).
-	for _, a := range otherWork {
-		switch {
-		case a.AssetType == "ETF" || a.AssetType == "US_FUND" || a.AssetType == "METAL" || a.AssetType == "GOLD" || (a.AssetType == "MF" && a.AMFICode == ""):
-			m, err := FetchETFMetrics(ctx, a.ID, a.YahooSymbol, pool, timeout)
-			if err != nil {
-				addErr(fmt.Sprintf("fetch ETF %d: %s", a.ID, err))
-				continue
-			}
-			if err := SaveScore(ctx, pool, a.ID, "etf", m.Zero1Score, m); err != nil {
-				addErr(fmt.Sprintf("save ETF %d: %s", a.ID, err))
-				continue
-			}
-			incSuccess()
-
-		case a.AssetType == "STOCK":
-			if a.YahooSymbol == "" {
-				addErr(fmt.Sprintf("stock %d: no yahoo_symbol", a.ID))
-				continue
-			}
-			m, err := FetchStockMetrics(ctx, a.ID, a.YahooSymbol, pool, timeout)
-			if err != nil {
-				addErr(fmt.Sprintf("fetch stock %d: %s", a.ID, err))
-				continue
-			}
-			if err := SaveScore(ctx, pool, a.ID, "stock", m.Zero1Score, m); err != nil {
-				addErr(fmt.Sprintf("save stock %d: %s", a.ID, err))
-				continue
-			}
-			incSuccess()
-		}
-	}
+	mu.Lock()
+	emit(RefreshProgressEvent{Type: "scores_done", Success: result.Success, Total: result.Total})
+	mu.Unlock()
 
 	return result
 }

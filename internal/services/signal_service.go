@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -101,6 +102,7 @@ type signalHolding struct {
 	ExitLoadSchedule  any         `json:"exit_load_schedule"`
 	SIPActive         bool        `json:"sip_active"`
 	YahooSymbol       string      `json:"yahoo_symbol,omitempty"`
+	GrowwSlug         string      `json:"-"` // internal only, not sent to AI
 	// Scorecard metrics — one of these is populated depending on asset_type.
 	MFMetrics    *MFMetrics    `json:"mf_metrics,omitempty"`
 	ETFMetrics   *ETFMetrics   `json:"etf_metrics,omitempty"`
@@ -113,11 +115,13 @@ type signalHolding struct {
 type HoldingSignal struct {
 	InstrumentID    int64    `json:"instrument_id"`
 	InstrumentName  string   `json:"instrument_name"`
-	Action          string   `json:"action"`          // BUY_MORE | HOLD | SWITCH | BOOK_PROFIT
-	Confidence      int      `json:"confidence"`       // 55–95
-	Reason          string   `json:"reason"`           // 1–2 sentence summary
-	KeyPoints       []string `json:"key_points"`       // 3–5 data-backed bullet points
-	QualitativeNote string   `json:"qualitative_note"` // AI qualitative context (company/sector/fund)
+	Action          string   `json:"action"`           // BUY_MORE | HOLD | PARTIAL_SELL | BOOK_PROFIT
+	Confidence      int      `json:"confidence"`        // 55–95
+	Reason          string   `json:"reason"`            // 2–3 sentence rationale
+	KeyPoints       []string `json:"key_points"`        // 4–5 data-backed bullet points
+	QualitativeNote string   `json:"qualitative_note"`  // what numbers can't capture
+	RecentEvents    string   `json:"recent_events,omitempty"`  // news/events from AI training knowledge
+	EventsImpact    string   `json:"events_impact,omitempty"`  // "positive" | "negative" | "neutral"
 	TaxNote         string   `json:"tax_note,omitempty"`
 	Zero1Score      int      `json:"zero1_score,omitempty"`
 }
@@ -272,15 +276,29 @@ func assetTypeToInstrumentType(assetType string) string {
 	}
 }
 
-func (s *SignalService) BuildPortfolioPayload(ctx context.Context) (*signalPortfolioPayload, error) {
+// buildPortfolioBase builds the payload with FIFO lots, prices, and LTCG data
+// but without any metric enrichment. Call enrichHoldingsLive or enrichHoldingsFromCache afterward.
+func (s *SignalService) buildPortfolioBase(ctx context.Context) (*signalPortfolioPayload, error) {
+	// Only include instruments with ≥ 0.5 net units remaining — mirrors the
+	// portfolio holdings API filter and excludes fully-exited positions.
 	rows, err := s.pool.Query(ctx, `
 		SELECT t.instrument_id, i.name, i.isin, i.asset_type, i.exchange, i.amfi_code,
-		       COALESCE(i.yahoo_symbol, ''),
+		       COALESCE(i.yahoo_symbol, ''), COALESCE(i.groww_slug, ''), COALESCE(i.currency, 'INR'),
 		       t.transaction_date::text, t.transaction_type,
 		       t.quantity::float, t.price::float, t.amount::float
 		  FROM transactions t
 		  JOIN instruments i ON t.instrument_id = i.id
 		 WHERE t.transaction_type IN ('BUY','SWITCH_IN','SELL','SWITCH_OUT','BONUS')
+		   AND t.instrument_id IN (
+		         SELECT instrument_id
+		           FROM transactions
+		          WHERE transaction_type IN ('BUY','SWITCH_IN','SELL','SWITCH_OUT','BONUS')
+		          GROUP BY instrument_id
+		         HAVING SUM(
+		           CASE WHEN transaction_type IN ('BUY','SWITCH_IN','BONUS')
+		                THEN quantity::float ELSE -quantity::float END
+		         ) >= 0.5
+		       )
 		 ORDER BY t.instrument_id, t.transaction_date, t.id
 	`)
 	if err != nil {
@@ -288,7 +306,7 @@ func (s *SignalService) BuildPortfolioPayload(ctx context.Context) (*signalPortf
 	}
 	defer rows.Close()
 
-	type instrMeta struct{ name, isin, assetType, exchange, amfiCode, yahooSymbol string }
+	type instrMeta struct{ name, isin, assetType, exchange, amfiCode, yahooSymbol, growwSlug, currency string }
 	type instrState struct {
 		meta instrMeta
 		lots []fifoActiveLot
@@ -297,10 +315,10 @@ func (s *SignalService) BuildPortfolioPayload(ctx context.Context) (*signalPortf
 
 	for rows.Next() {
 		var instrID int64
-		var name, assetType, yahooSymbol, txDate, txType string
+		var name, assetType, yahooSymbol, growwSlug, currency, txDate, txType string
 		var isin, exchange, amfiCode *string
 		var qty, price, amount float64
-		if err := rows.Scan(&instrID, &name, &isin, &assetType, &exchange, &amfiCode, &yahooSymbol, &txDate, &txType, &qty, &price, &amount); err != nil {
+		if err := rows.Scan(&instrID, &name, &isin, &assetType, &exchange, &amfiCode, &yahooSymbol, &growwSlug, &currency, &txDate, &txType, &qty, &price, &amount); err != nil {
 			return nil, err
 		}
 		st, ok := states[instrID]
@@ -312,6 +330,8 @@ func (s *SignalService) BuildPortfolioPayload(ctx context.Context) (*signalPortf
 				exchange:    derefStr(exchange),
 				amfiCode:    derefStr(amfiCode),
 				yahooSymbol: yahooSymbol,
+				growwSlug:   growwSlug,
+				currency:    currency,
 			}}
 			states[instrID] = st
 		}
@@ -395,6 +415,17 @@ func (s *SignalService) BuildPortfolioPayload(ctx context.Context) (*signalPortf
 		ltcgBooked = 0
 	}
 
+	// Fetch USD→INR rate for currency normalisation (nav_price for USD instruments is stored in INR).
+	usdInrRate := 84.0 // fallback
+	_ = s.pool.QueryRow(ctx, `
+		SELECT nav_price::float FROM prices
+		 WHERE instrument_id = (SELECT id FROM instruments WHERE yahoo_symbol = 'INR=X' LIMIT 1)
+		 ORDER BY price_date DESC LIMIT 1
+	`).Scan(&usdInrRate)
+	if usdInrRate < 50 || usdInrRate > 200 {
+		usdInrRate = 84.0 // sanity fallback
+	}
+
 	holdings := make([]signalHolding, 0, len(activeIDs))
 	for _, id := range activeIDs {
 		st := states[id]
@@ -402,6 +433,8 @@ func (s *SignalService) BuildPortfolioPayload(ctx context.Context) (*signalPortf
 			continue
 		}
 		currentPrice := priceMap[id]
+		isUSD := strings.EqualFold(st.meta.currency, "USD")
+
 		var totalUnits, totalInvested float64
 		lots := make([]signalLot, 0, len(st.lots))
 		for _, l := range st.lots {
@@ -417,15 +450,22 @@ func (s *SignalService) BuildPortfolioPayload(ctx context.Context) (*signalPortf
 			continue
 		}
 		// Skip holdings with no recorded cost basis (e.g. bonus-only lots).
-		// These show "invested: -" in the UI and have no meaningful signal.
 		if totalInvested <= 0 {
 			continue
 		}
-		currentValue := totalUnits * currentPrice
-		gainAbs := currentValue - totalInvested
+
+		// nav_price for USD instruments is stored in INR; transaction amounts are in USD.
+		// Normalise invested to INR so both sides are in the same currency.
+		totalInvestedINR := totalInvested
+		if isUSD {
+			totalInvestedINR = totalInvested * usdInrRate
+		}
+
+		currentValue := totalUnits * currentPrice // always INR (price stored in INR)
+		gainAbs := currentValue - totalInvestedINR
 		var gainPct float64
-		if totalInvested > 0 {
-			gainPct = gainAbs / totalInvested * 100
+		if totalInvestedINR > 0 {
+			gainPct = gainAbs / totalInvestedINR * 100
 		}
 		holdings = append(holdings, signalHolding{
 			InstrumentID:      id,
@@ -435,6 +475,7 @@ func (s *SignalService) BuildPortfolioPayload(ctx context.Context) (*signalPortf
 			Exchange:          st.meta.exchange,
 			AMFICode:          st.meta.amfiCode,
 			YahooSymbol:       st.meta.yahooSymbol,
+			GrowwSlug:         st.meta.growwSlug,
 			PurchaseLots:      lots,
 			CurrentPrice:      r2(currentPrice),
 			CurrentValue:      r2(currentValue),
@@ -445,9 +486,39 @@ func (s *SignalService) BuildPortfolioPayload(ctx context.Context) (*signalPortf
 		})
 	}
 
-	// Enrich holdings with scorecard metrics by asset type.
-	// Fetch concurrently for MFs; sequentially (crumb) for stocks/ETFs.
-	// Failures are silently skipped — metrics are best-effort.
+	fy := fmt.Sprintf("%d-%02d", fyStart.Year(), fyStart.Year()%100+1)
+	return &signalPortfolioPayload{
+		AnalysisDate:     now.Format("2006-01-02"),
+		FinancialYear:    fy,
+		LTCGBookedThisFY: r2(ltcgBooked),
+		Holdings:         holdings,
+	}, nil
+}
+
+// BuildPortfolioPayload builds the full payload with live metric fetches from external APIs.
+func (s *SignalService) BuildPortfolioPayload(ctx context.Context) (*signalPortfolioPayload, error) {
+	payload, err := s.buildPortfolioBase(ctx)
+	if err != nil {
+		return nil, err
+	}
+	enrichHoldingsLive(ctx, s.pool, payload.Holdings)
+	return payload, nil
+}
+
+// BuildPortfolioPayloadFromCache builds the portfolio payload using metrics already
+// cached in instrument_scores — no external API calls. Call this after RefreshAllScores
+// to avoid re-fetching what was just fetched.
+func (s *SignalService) BuildPortfolioPayloadFromCache(ctx context.Context) (*signalPortfolioPayload, error) {
+	payload, err := s.buildPortfolioBase(ctx)
+	if err != nil {
+		return nil, err
+	}
+	enrichHoldingsFromCache(ctx, s.pool, payload.Holdings)
+	return payload, nil
+}
+
+// enrichHoldingsLive fetches live metrics from external APIs and attaches them to holdings.
+func enrichHoldingsLive(ctx context.Context, pool *pgxpool.Pool, holdings []signalHolding) {
 	amfiCodes := make([]string, 0)
 	type stockETFJob struct {
 		idx         int
@@ -468,16 +539,13 @@ func (s *SignalService) BuildPortfolioPayload(ctx context.Context) (*signalPortf
 				stockETFJobs = append(stockETFJobs, stockETFJob{i, holdings[i].InstrumentID, holdings[i].YahooSymbol, "STOCK"})
 			}
 		}
-		// ETFs: treat same as equity_mf but flagged by InstrumentType; re-check by raw asset type
 	}
-	// Also enrich ETFs (InstrumentType "equity_mf" but no amfi_code).
 	for i := range holdings {
 		if holdings[i].YahooSymbol != "" && holdings[i].AMFICode == "" &&
 			(holdings[i].InstrumentType == "equity_mf" || holdings[i].InstrumentType == "gold_etf") {
 			stockETFJobs = append(stockETFJobs, stockETFJob{i, holdings[i].InstrumentID, holdings[i].YahooSymbol, "ETF"})
 		}
 	}
-
 	if len(amfiCodes) > 0 {
 		metricsMap := FetchMFMetricsBatch(amfiCodes, 20*time.Second)
 		for i := range holdings {
@@ -489,23 +557,47 @@ func (s *SignalService) BuildPortfolioPayload(ctx context.Context) (*signalPortf
 	for _, job := range stockETFJobs {
 		switch job.assetType {
 		case "STOCK":
-			if m, err := FetchStockMetrics(ctx, job.id, job.yahooSymbol, s.pool, 20*time.Second); err == nil {
+			if m, err := FetchStockMetrics(ctx, job.id, job.yahooSymbol, pool, 20*time.Second); err == nil {
 				holdings[job.idx].StockMetrics = m
 			}
 		case "ETF":
-			if m, err := FetchETFMetrics(ctx, job.id, job.yahooSymbol, s.pool, 20*time.Second); err == nil {
+			if m, err := FetchETFMetrics(ctx, job.id, job.yahooSymbol, pool, 20*time.Second); err == nil {
 				holdings[job.idx].ETFMetrics = m
 			}
 		}
 	}
+}
 
-	fy := fmt.Sprintf("%d-%02d", fyStart.Year(), fyStart.Year()%100+1)
-	return &signalPortfolioPayload{
-		AnalysisDate:     now.Format("2006-01-02"),
-		FinancialYear:    fy,
-		LTCGBookedThisFY: r2(ltcgBooked),
-		Holdings:         holdings,
-	}, nil
+// enrichHoldingsFromCache reads instrument_scores and attaches cached metrics to each
+// holding — no external API calls.
+func enrichHoldingsFromCache(ctx context.Context, pool *pgxpool.Pool, holdings []signalHolding) {
+	for i := range holdings {
+		var kind string
+		var metricsJSON []byte
+		err := pool.QueryRow(ctx,
+			`SELECT kind, metrics_json FROM instrument_scores WHERE instrument_id = $1`,
+			holdings[i].InstrumentID).Scan(&kind, &metricsJSON)
+		if err != nil || len(metricsJSON) == 0 {
+			continue
+		}
+		switch kind {
+		case "mf":
+			var m MFMetrics
+			if json.Unmarshal(metricsJSON, &m) == nil {
+				holdings[i].MFMetrics = &m
+			}
+		case "etf":
+			var m ETFMetrics
+			if json.Unmarshal(metricsJSON, &m) == nil {
+				holdings[i].ETFMetrics = &m
+			}
+		case "stock":
+			var m StockMetrics
+			if json.Unmarshal(metricsJSON, &m) == nil {
+				holdings[i].StockMetrics = &m
+			}
+		}
+	}
 }
 
 func r2(v float64) float64 { return math.Round(v*100) / 100 }
@@ -537,28 +629,44 @@ func (s *SignalService) StreamStockAnalysis(ctx context.Context, w http.Response
 	return streamFromProvider(ctx, w, cfg, system, user)
 }
 
-// FetchHoldingsSignals calls the AI synchronously and returns one structured
-// signal per holding.
-//
-// ACTION is computed DETERMINISTICALLY from the score + risk profile + tax status.
-// AI is used only for reason, key_points, qualitative_note, and confidence.
-// This guarantees Signal always reflects the Score.
+// FetchHoldingsSignals sends full portfolio data + scorecard to AI and lets it decide
+// the action. The score-based suggestion is provided as a reference signal, not a mandate.
+// AI integrates quantitative data + qualitative knowledge (fund reputation, category
+// macro, manager track record, recent news from its training knowledge) to decide.
 func (s *SignalService) FetchHoldingsSignals(ctx context.Context, payload *signalPortfolioPayload, profile InvestorProfile, cfg AIConfig) (*HoldingsSignalsResult, error) {
-	// Build instrument_id → zero1_score map and compute deterministic actions.
-	metaMap := make(map[int64]holdingActionMeta, len(payload.Holdings))
+	// Post-process MF category relative ranks for peer context.
+	mfByCode := make(map[string]*MFMetrics)
+	for i := range payload.Holdings {
+		if payload.Holdings[i].MFMetrics != nil && payload.Holdings[i].AMFICode != "" {
+			mfByCode[payload.Holdings[i].AMFICode] = payload.Holdings[i].MFMetrics
+		}
+	}
+	if len(mfByCode) > 0 {
+		PostProcessMFBatch(mfByCode)
+	}
 
+	// Build score + STCG context per holding — sent as reference signals to AI.
+	type hintEntry struct {
+		score   int
+		action  string // score-derived suggestion
+		hasSTCG bool
+		ctx     AssetContext
+	}
+	hints := make(map[int64]hintEntry, len(payload.Holdings))
 	for _, h := range payload.Holdings {
 		var score int
+		var assetCtx AssetContext
 		switch {
 		case h.MFMetrics != nil:
 			score = h.MFMetrics.Zero1Score
+			assetCtx = AssetContext{RelativeRank: h.MFMetrics.RelativeRank, CategoryBearish: h.MFMetrics.CategoryBearish}
 		case h.ETFMetrics != nil:
 			score = h.ETFMetrics.Zero1Score
+			assetCtx = AssetContext{RelativeRank: h.ETFMetrics.RelativeRank, CategoryBearish: h.ETFMetrics.CategoryBearish}
 		case h.StockMetrics != nil:
 			score = h.StockMetrics.Zero1Score
+			assetCtx = AssetContext{RelativeRank: h.StockMetrics.RelativeRank, CategoryBearish: h.StockMetrics.SectorBearish}
 		}
-
-		// Determine if any lot is STCG (< 12 months old).
 		cutoff := time.Now().AddDate(-1, 0, 0)
 		hasSTCG := false
 		for _, lot := range h.PurchaseLots {
@@ -567,25 +675,36 @@ func (s *SignalService) FetchHoldingsSignals(ctx context.Context, payload *signa
 				break
 			}
 		}
-
-		action := scoreToAction(score, profile.RiskProfile, hasSTCG)
-		metaMap[h.InstrumentID] = holdingActionMeta{
-			score:      score,
-			action:     action,
-			hasMetrics: score > 0,
-			hasSTCG:    hasSTCG,
+		hints[h.InstrumentID] = hintEntry{
+			score:   score,
+			action:  scoreToAction(score, profile.RiskProfile, assetCtx),
+			hasSTCG: hasSTCG,
+			ctx:     assetCtx,
 		}
 	}
 
-	// Ask AI only for explanatory content (reason, key_points, qualitative_note, confidence).
-	// We inject the pre-computed action so AI knows what decision to justify.
+	// Build score reference summary for the user message.
+	var scoreSummary strings.Builder
+	for id, h := range hints {
+		scoreSummary.WriteString(fmt.Sprintf("  instrument_id=%d  score=%d  suggested=%s  relative_rank=%d",
+			id, h.score, h.action, h.ctx.RelativeRank))
+		if h.hasSTCG {
+			scoreSummary.WriteString("  [has STCG lots — note in tax_note]")
+		}
+		if h.ctx.CategoryBearish {
+			scoreSummary.WriteString("  [category/sector broadly bearish]")
+		}
+		scoreSummary.WriteString("\n")
+	}
+
 	payloadBytes, _ := json.MarshalIndent(payload, "", "  ")
-	prompts := s.loadPromptsFromDB(ctx)
-	system := buildSignalsJSONPrompt(profile.RiskProfile, prompts)
+	system := buildSignalsJSONPrompt(profile)
 	user := fmt.Sprintf(
-		"Profile:\n- Goal: %s\n- Horizon: %s\n\nPRE-COMPUTED ACTIONS (you must justify these, not change them):\n%s\n\nPortfolio:\n```json\n%s\n```",
-		profile.Goal, profile.Horizon,
-		buildActionSummary(metaMap), payloadBytes,
+		"INVESTOR PROFILE:\n- Goal: %s\n- Horizon: %s\n- Risk: %s\n\n"+
+			"QUANTITATIVE SCORE REFERENCE (your starting point — override with qualitative reasoning if warranted):\n%s\n\n"+
+			"FULL PORTFOLIO DATA:\n```json\n%s\n```",
+		profile.Goal, profile.Horizon, string(profile.RiskProfile),
+		scoreSummary.String(), payloadBytes,
 	)
 
 	raw, err := callProviderJSON(ctx, cfg, system, user)
@@ -612,11 +731,19 @@ func (s *SignalService) FetchHoldingsSignals(ctx context.Context, payload *signa
 		wrapper.Signals = []HoldingSignal{}
 	}
 
-	// Override action and score with deterministic values — AI cannot change these.
+	// Validate: if AI returns an invalid action, fall back to score-derived suggestion.
+	validActions := map[string]bool{"BUY_MORE": true, "HOLD": true, "PARTIAL_SELL": true, "BOOK_PROFIT": true}
 	for i := range wrapper.Signals {
-		if meta, ok := metaMap[wrapper.Signals[i].InstrumentID]; ok {
-			wrapper.Signals[i].Action = meta.action
-			wrapper.Signals[i].Zero1Score = meta.score
+		if !validActions[wrapper.Signals[i].Action] {
+			if h, ok := hints[wrapper.Signals[i].InstrumentID]; ok {
+				wrapper.Signals[i].Action = h.action
+			} else {
+				wrapper.Signals[i].Action = "HOLD"
+			}
+		}
+		// Always populate score from our computation.
+		if h, ok := hints[wrapper.Signals[i].InstrumentID]; ok {
+			wrapper.Signals[i].Zero1Score = h.score
 		}
 	}
 
@@ -626,27 +753,488 @@ func (s *SignalService) FetchHoldingsSignals(ctx context.Context, payload *signa
 	}, nil
 }
 
-// scoreToAction maps a 0–100 score to an action, applying risk profile and tax adjustments.
-func scoreToAction(score int, profile RiskProfile, hasSTCG bool) string {
-	if score == 0 {
-		return "HOLD" // no data — default safe
+// PipelineEvent is the unified progress event for RefreshAndAnalyse.
+// A single fund goes through: fund_start → fund_scored → fund_done (or fund_error).
+type PipelineEvent struct {
+	Type             string `json:"type"`                        // fund_start | fund_scored | fund_done | fund_error | all_done
+	ID               int64  `json:"instrument_id"`
+	Name             string `json:"name"`
+	AssetType        string `json:"asset_type,omitempty"`
+	Score            int    `json:"score,omitempty"`
+	Action           string `json:"action,omitempty"`
+	Error            string `json:"error,omitempty"`
+	Success          int    `json:"success,omitempty"`           // all_done only
+	Total            int    `json:"total,omitempty"`             // all_done only
+	SignalsGenerated bool   `json:"signals_generated,omitempty"` // all_done only
+}
+
+// RefreshAndAnalyse is the unified pipeline: for each holding it fetches live metrics,
+// saves the score, then immediately runs the AI analysis — all in one pass with a
+// semaphore of 3 so at most 3 funds are in-flight (fetch + AI) at any moment.
+// This replaces the old two-phase RefreshAllScores → FetchSignalsPerFund approach.
+func (s *SignalService) RefreshAndAnalyse(
+	ctx context.Context,
+	profile InvestorProfile,
+	cfg AIConfig,
+	timeout time.Duration,
+	progressCh chan<- PipelineEvent,
+) (*HoldingsSignalsResult, error) {
+	emit := func(e PipelineEvent) {
+		if progressCh != nil {
+			select {
+			case progressCh <- e:
+			default:
+			}
+		}
 	}
+
+	// Pre-load all holdings (FIFO lots + prices) from DB — cheap, no external calls.
+	payload, err := s.buildPortfolioBase(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("build base: %w", err)
+	}
+	if len(payload.Holdings) == 0 {
+		return &HoldingsSignalsResult{Signals: []HoldingSignal{}, RiskProfile: string(profile.RiskProfile)}, nil
+	}
+
+	system := buildFundSignalPrompt(profile)
+
+	type result struct {
+		signal HoldingSignal
+		ok     bool
+	}
+	results := make([]result, len(payload.Holdings))
+	var mu sync.Mutex
+	successCount := 0
+
+	sem := make(chan struct{}, 3) // ← single semaphore for fetch + AI combined
+	var wg sync.WaitGroup
+
+	for i, h := range payload.Holdings {
+		wg.Add(1)
+		go func(idx int, holding signalHolding) {
+			defer wg.Done()
+			sem <- struct{}{}        // acquire — holds slot for entire fetch+AI
+			defer func() { <-sem }() // release when both are done
+
+			emit(PipelineEvent{Type: "fund_start", ID: holding.InstrumentID, Name: holding.Name, AssetType: holding.InstrumentType})
+
+			// ── Step 1: fetch live metrics ────────────────────────────────────
+			var score int
+			var fetchErr error
+
+			switch {
+			case holding.AMFICode != "": // MF with AMFI code
+				m, err := FetchMFMetrics(holding.AMFICode, timeout, holding.GrowwSlug)
+				if err != nil {
+					fetchErr = err
+				} else {
+					_ = SaveScore(ctx, s.pool, holding.InstrumentID, "mf", m.Zero1Score, m)
+					holding.MFMetrics = m
+					score = m.Zero1Score
+				}
+
+			case holding.YahooSymbol != "" && holding.InstrumentType == "equity_stock":
+				m, err := FetchStockMetrics(ctx, holding.InstrumentID, holding.YahooSymbol, s.pool, timeout)
+				if err != nil {
+					fetchErr = err
+				} else {
+					_ = SaveScore(ctx, s.pool, holding.InstrumentID, "stock", m.Zero1Score, m)
+					holding.StockMetrics = m
+					score = m.Zero1Score
+				}
+
+			case holding.YahooSymbol != "": // ETF / metal / US fund
+				m, err := FetchETFMetrics(ctx, holding.InstrumentID, holding.YahooSymbol, s.pool, timeout)
+				if err != nil {
+					fetchErr = err
+				} else {
+					_ = SaveScore(ctx, s.pool, holding.InstrumentID, "etf", m.Zero1Score, m)
+					holding.ETFMetrics = m
+					score = m.Zero1Score
+				}
+
+			default:
+				fetchErr = fmt.Errorf("no AMFI code or Yahoo symbol for %s", holding.Name)
+			}
+
+			if fetchErr != nil {
+				emit(PipelineEvent{Type: "fund_error", ID: holding.InstrumentID, Name: holding.Name, Error: fetchErr.Error()})
+				return
+			}
+
+			emit(PipelineEvent{Type: "fund_scored", ID: holding.InstrumentID, Name: holding.Name, Score: score})
+
+			// ── Step 2: AI analysis ───────────────────────────────────────────
+			assetCtx := assetContextFor(&holding)
+			suggestedAction := scoreToAction(score, profile.RiskProfile, assetCtx)
+			hasSTCG := holdingHasSTCG(&holding)
+
+			sig, aiErr := fetchSingleFundSignal(ctx, holding, score, suggestedAction, hasSTCG, assetCtx, profile, cfg, system)
+			if aiErr != nil {
+				// AI failed — fall back to score-derived signal rather than dropping the fund.
+				sig = &HoldingSignal{
+					InstrumentID:   holding.InstrumentID,
+					InstrumentName: holding.Name,
+					Action:         suggestedAction,
+					Confidence:     60,
+					Reason:         "AI analysis failed; action derived from quantitative score.",
+					Zero1Score:     score,
+				}
+			}
+			sig.Zero1Score = score
+
+			mu.Lock()
+			results[idx] = result{signal: *sig, ok: true}
+			successCount++
+			mu.Unlock()
+
+			emit(PipelineEvent{Type: "fund_done", ID: holding.InstrumentID, Name: holding.Name, Score: score, Action: sig.Action})
+		}(i, h)
+	}
+	wg.Wait()
+
+	signals := make([]HoldingSignal, 0, len(payload.Holdings))
+	for _, r := range results {
+		if r.ok {
+			signals = append(signals, r.signal)
+		}
+	}
+
+	emit(PipelineEvent{Type: "all_done", Success: successCount, Total: len(payload.Holdings), SignalsGenerated: len(signals) > 0})
+
+	return &HoldingsSignalsResult{
+		Signals:     signals,
+		RiskProfile: string(profile.RiskProfile),
+	}, nil
+}
+
+// isETFLike returns true for asset types handled by FetchETFMetrics.
+func isETFLike(instrType string) bool {
+	switch instrType {
+	case "gold_etf", "silver_etf", "index_etf", "sector_etf", "us_fund", "metal", "other_etf":
+		return true
+	}
+	return false
+}
+
+// assetContextFor builds the AssetContext from a holding's already-populated metrics.
+func assetContextFor(h *signalHolding) AssetContext {
+	switch {
+	case h.MFMetrics != nil:
+		return AssetContext{RelativeRank: h.MFMetrics.RelativeRank, CategoryBearish: h.MFMetrics.CategoryBearish}
+	case h.ETFMetrics != nil:
+		return AssetContext{RelativeRank: h.ETFMetrics.RelativeRank, CategoryBearish: h.ETFMetrics.CategoryBearish}
+	case h.StockMetrics != nil:
+		return AssetContext{RelativeRank: h.StockMetrics.RelativeRank, CategoryBearish: h.StockMetrics.SectorBearish}
+	}
+	return AssetContext{}
+}
+
+// holdingHasSTCG returns true if any purchase lot is within the last 12 months.
+func holdingHasSTCG(h *signalHolding) bool {
+	cutoff := time.Now().AddDate(-1, 0, 0)
+	for _, lot := range h.PurchaseLots {
+		if t, err := time.Parse("2006-01-02", lot.Date); err == nil && t.After(cutoff) {
+			return true
+		}
+	}
+	return false
+}
+
+// PerFundAIProgressEvent is emitted during FetchSignalsPerFund for each fund's AI call.
+type PerFundAIProgressEvent struct {
+	Type           string `json:"type"`            // "ai_fund_start" | "ai_fund_done" | "ai_fund_error"
+	ID             int64  `json:"instrument_id"`
+	Name           string `json:"name"`
+	Score          int    `json:"score,omitempty"`
+	Action         string `json:"action,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
+// FetchSignalsPerFund runs one AI call per holding in parallel (max 3 concurrent).
+// progressCh receives live events; pass nil to skip. Returns combined result.
+func (s *SignalService) FetchSignalsPerFund(
+	ctx context.Context,
+	payload *signalPortfolioPayload,
+	profile InvestorProfile,
+	cfg AIConfig,
+	progressCh chan<- PerFundAIProgressEvent,
+) (*HoldingsSignalsResult, error) {
+	emitAI := func(e PerFundAIProgressEvent) {
+		if progressCh != nil {
+			select {
+			case progressCh <- e:
+			default:
+			}
+		}
+	}
+
+	// Pre-compute score + STCG hints (same as FetchHoldingsSignals).
+	mfByCode := make(map[string]*MFMetrics)
+	for i := range payload.Holdings {
+		if payload.Holdings[i].MFMetrics != nil && payload.Holdings[i].AMFICode != "" {
+			mfByCode[payload.Holdings[i].AMFICode] = payload.Holdings[i].MFMetrics
+		}
+	}
+	if len(mfByCode) > 0 {
+		PostProcessMFBatch(mfByCode)
+	}
+
+	type hintEntry struct {
+		score  int
+		action string
+		hasSTCG bool
+		ctx    AssetContext
+	}
+	hints := make(map[int64]hintEntry, len(payload.Holdings))
+	for _, h := range payload.Holdings {
+		var score int
+		var assetCtx AssetContext
+		switch {
+		case h.MFMetrics != nil:
+			score = h.MFMetrics.Zero1Score
+			assetCtx = AssetContext{RelativeRank: h.MFMetrics.RelativeRank, CategoryBearish: h.MFMetrics.CategoryBearish}
+		case h.ETFMetrics != nil:
+			score = h.ETFMetrics.Zero1Score
+			assetCtx = AssetContext{RelativeRank: h.ETFMetrics.RelativeRank, CategoryBearish: h.ETFMetrics.CategoryBearish}
+		case h.StockMetrics != nil:
+			score = h.StockMetrics.Zero1Score
+			assetCtx = AssetContext{RelativeRank: h.StockMetrics.RelativeRank, CategoryBearish: h.StockMetrics.SectorBearish}
+		}
+		cutoff := time.Now().AddDate(-1, 0, 0)
+		hasSTCG := false
+		for _, lot := range h.PurchaseLots {
+			if t, err := time.Parse("2006-01-02", lot.Date); err == nil && t.After(cutoff) {
+				hasSTCG = true
+				break
+			}
+		}
+		hints[h.InstrumentID] = hintEntry{
+			score:   score,
+			action:  scoreToAction(score, profile.RiskProfile, assetCtx),
+			hasSTCG: hasSTCG,
+			ctx:     assetCtx,
+		}
+	}
+
+	system := buildFundSignalPrompt(profile)
+
+	type result struct {
+		signal HoldingSignal
+		err    error
+	}
+
+	results := make([]result, len(payload.Holdings))
+	sem := make(chan struct{}, 3)
+	var wg sync.WaitGroup
+
+	for i, h := range payload.Holdings {
+		wg.Add(1)
+		go func(idx int, holding signalHolding) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			hint := hints[holding.InstrumentID]
+			emitAI(PerFundAIProgressEvent{Type: "ai_fund_start", ID: holding.InstrumentID, Name: holding.Name})
+
+			sig, err := fetchSingleFundSignal(ctx, holding, hint.score, hint.action, hint.hasSTCG, hint.ctx, profile, cfg, system)
+			if err != nil {
+				results[idx] = result{err: err}
+				emitAI(PerFundAIProgressEvent{Type: "ai_fund_error", ID: holding.InstrumentID, Name: holding.Name, Error: err.Error()})
+				return
+			}
+			// Always inject our computed score.
+			sig.Zero1Score = hint.score
+			results[idx] = result{signal: *sig}
+			emitAI(PerFundAIProgressEvent{Type: "ai_fund_done", ID: holding.InstrumentID, Name: holding.Name, Score: hint.score, Action: sig.Action})
+		}(i, h)
+	}
+	wg.Wait()
+
+	signals := make([]HoldingSignal, 0, len(payload.Holdings))
+	for _, r := range results {
+		if r.err == nil {
+			signals = append(signals, r.signal)
+		}
+	}
+
+	return &HoldingsSignalsResult{
+		Signals:     signals,
+		RiskProfile: string(profile.RiskProfile),
+	}, nil
+}
+
+// fetchSingleFundSignal calls the AI for one holding and returns its signal.
+func fetchSingleFundSignal(
+	ctx context.Context,
+	h signalHolding,
+	score int,
+	suggestedAction string,
+	hasSTCG bool,
+	assetCtx AssetContext,
+	profile InvestorProfile,
+	cfg AIConfig,
+	system string,
+) (*HoldingSignal, error) {
+	stcgNote := ""
+	if hasSTCG {
+		stcgNote = "  [has STCG lots — note 20% tax in tax_note]"
+	}
+	bearNote := ""
+	if assetCtx.CategoryBearish {
+		bearNote = "  [category/sector broadly bearish — factor into decision]"
+	}
+
+	holdingJSON, _ := json.MarshalIndent(h, "", "  ")
+	user := fmt.Sprintf(
+		"INVESTOR PROFILE:\n- Goal: %s\n- Horizon: %s\n- Risk: %s\n\n"+
+			"QUANTITATIVE SIGNAL:\n  score=%d  suggested_action=%s  relative_rank=%d%s%s\n\n"+
+			"HOLDING DATA:\n```json\n%s\n```",
+		profile.Goal, profile.Horizon, string(profile.RiskProfile),
+		score, suggestedAction, assetCtx.RelativeRank, stcgNote, bearNote,
+		holdingJSON,
+	)
+
+	raw, err := callProviderJSON(ctx, cfg, system, user)
+	if err != nil {
+		return nil, err
+	}
+
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "```") {
+		raw = raw[strings.Index(raw, "\n")+1:]
+		if idx := strings.LastIndex(raw, "```"); idx >= 0 {
+			raw = raw[:idx]
+		}
+		raw = strings.TrimSpace(raw)
+	}
+
+	var sig HoldingSignal
+	if err := json.Unmarshal([]byte(raw), &sig); err != nil {
+		return nil, fmt.Errorf("parse: %w\nraw: %.200s", err, raw)
+	}
+
+	validActions := map[string]bool{"BUY_MORE": true, "HOLD": true, "PARTIAL_SELL": true, "BOOK_PROFIT": true}
+	if !validActions[sig.Action] {
+		sig.Action = suggestedAction
+	}
+	if sig.InstrumentID == 0 {
+		sig.InstrumentID = h.InstrumentID
+	}
+	if sig.InstrumentName == "" {
+		sig.InstrumentName = h.Name
+	}
+	return &sig, nil
+}
+
+// buildFundSignalPrompt builds the per-fund system prompt (hardcoded — not from DB).
+func buildFundSignalPrompt(profile InvestorProfile) string {
+	return fmt.Sprintf(`You are a senior investment analyst specialising in Indian equity markets (BSE/NSE, SEBI), Indian Mutual Funds, and US markets.
+
+You will receive data for ONE holding — quantitative scorecard metrics, purchase history, current value, and unrealised gain. Analyse everything thoroughly and give your best independent judgment.
+
+INVESTOR RISK PROFILE: %s
+INVESTOR GOAL: %s
+INVESTOR HORIZON: %s
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT TO ANALYSE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Quantitative data provided:
+- zero1_score (0–100), available_max, data_gaps
+- Returns: rolling 1Y/3Y avg, consistency, Sharpe, Sortino, alpha
+- Risk: max drawdown, std dev, beta
+- Fund ops: AUM, TER/expense ratio, tracking error (ETFs)
+- Valuation: PE, PB, dividend yield, sector comparisons (stocks/ETFs)
+- Position: current_value, unrealised_gain_abs, unrealised_gain_pct
+- Tax context: purchase_lots dates (determine LTCG/STCG eligibility)
+
+Apply your own knowledge:
+- Fund house reputation, manager track record, style consistency
+- Category/sector macro outlook and cycle positioning
+- Product-specific risks (leverage decay, liquidity, capacity constraints)
+- Tax implications: LTCG >12 months = 12.5%% flat, ₹1.25L/FY exempt; STCG ≤12 months = 20%% flat
+
+Indian tax rules apply to every decision. Check purchase_lots dates carefully to determine holding period.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT — STRICT JSON, NO MARKDOWN WRAPPER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{
+  "instrument_id": <number — exact match from input>,
+  "instrument_name": "<exact name from input>",
+  "action": "BUY_MORE" | "HOLD" | "PARTIAL_SELL" | "BOOK_PROFIT",
+  "confidence": <integer 55–95>,
+  "reason": "<2–3 sentences: your complete rationale, integrating quantitative data and qualitative judgment>",
+  "key_points": [
+    "<specific metric with value and what it signals>",
+    "<another specific metric>",
+    "<qualitative insight from your knowledge — fund/sector/product>",
+    "<tax situation: LTCG or STCG, rate, and how it affects the decision>",
+    "<any additional risk, opportunity, or context worth flagging>"
+  ],
+  "qualitative_note": "<1–2 sentences: what the numbers alone cannot tell you about this fund, stock, or product>",
+  "recent_events": "<any significant recent events, news, regulatory changes, or macro developments from your training knowledge that affect this instrument — or empty string if none>",
+  "events_impact": "positive" | "negative" | "neutral" | "",
+  "tax_note": "<LTCG or STCG eligibility, applicable rate, and practical implication for this decision — ≤25 words>"
+}
+
+RULES:
+- key_points: exactly 4–5 items; always cite specific numbers from the data
+- confidence: 55–95; be honest — lower when data is sparse or signals conflict
+- recent_events: report any relevant events you know about up to your training cutoff — leadership changes, regulatory actions, fund mergers, earnings surprises, sector news. If you have nothing material to add, leave it as an empty string. Never fabricate events.
+- events_impact: set to "positive", "negative", or "neutral" only when recent_events is non-empty; otherwise empty string
+- If data_gaps is non-empty, note which metrics are missing and that the score is partial`, string(profile.RiskProfile), profile.Goal, profile.Horizon)
+}
+
+// AssetContext carries category/sector-relative intelligence into scoreToAction.
+// It prevents punishing a fund that is merely caught in a broad market downturn —
+// switching within a bear sector solves nothing.
+type AssetContext struct {
+	// RelativeRank is the 0–100 percentile of this asset vs its category peers.
+	//   MF:  Rolling3YAvg percentile within same-category funds in the portfolio,
+	//        or vs categoryBenchmarkCAGR when only one fund exists in that category.
+	//   ETF: TER-efficiency rank (lower cost = higher rank) — NOT return-based,
+	//        because ETF returns equal the index; there is no manager alpha.
+	//   Stock: alpha rank = Return1YPct − sectorReturn1Y benchmark.
+	RelativeRank int
+	// CategoryBearish is true when the whole category/sector is broadly under water.
+	//   MF:  category median Rolling3YAvg < risk-free rate (7%).
+	//   ETF: Rolling3YAvg < 8% (underlying index in a prolonged bear).
+	//   Stock: sector benchmark 1Y return is negative.
+	CategoryBearish bool
+}
+
+// scoreToAction maps a 0–100 score to an action using risk profile and category context.
+// STCG does NOT affect the action — it is informational only (shown as a tax tag in the UI).
+// SWITCH and BOOK_PROFIT are suppressed when the asset is the top performer in its category
+// (RelativeRank ≥ 65) or when the whole category is bearish — switching within a bear
+// market to another fund in the same category accomplishes nothing.
+func scoreToAction(score int, profile RiskProfile, ctx AssetContext) string {
+	if score == 0 {
+		return "HOLD"
+	}
+	topOfCategory := ctx.RelativeRank >= 65
 	switch {
 	case score >= 80:
 		if profile == RiskConservative {
-			return "HOLD" // conservative: don't buy more even on strong funds
+			return "HOLD"
 		}
 		return "BUY_MORE"
 	case score >= 65:
 		return "HOLD"
 	case score >= 50:
-		if hasSTCG && profile != RiskAggressive {
-			return "HOLD" // avoid SWITCH if it triggers 20% STCG
+		// Reduce exposure partially — don't fully exit but reduce risk.
+		// HOLD when this is already the best option in a bearish category.
+		if topOfCategory || ctx.CategoryBearish {
+			return "HOLD"
 		}
-		return "SWITCH"
+		return "PARTIAL_SELL"
 	default: // < 50
-		if hasSTCG && profile == RiskConservative {
-			return "HOLD" // wait for LTCG before exiting
+		if topOfCategory && ctx.CategoryBearish {
+			return "HOLD"
 		}
 		return "BOOK_PROFIT"
 	}
@@ -657,15 +1245,24 @@ type holdingActionMeta struct {
 	action     string
 	hasMetrics bool
 	hasSTCG    bool
+	ctx        AssetContext
 }
 
 // buildActionSummary formats the pre-computed actions for the AI prompt.
+// It includes category context so the AI can give richer explanations when a
+// HOLD is chosen despite a low absolute score (bear-market suppression).
 func buildActionSummary(metaMap map[int64]holdingActionMeta) string {
 	var b strings.Builder
 	for id, m := range metaMap {
-		b.WriteString(fmt.Sprintf("  instrument_id=%d → score=%d → action=%s", id, m.score, m.action))
+		b.WriteString(fmt.Sprintf("  instrument_id=%d → score=%d → relative_rank=%d → action=%s",
+			id, m.score, m.ctx.RelativeRank, m.action))
 		if m.hasSTCG {
-			b.WriteString(" (STCG applies)")
+			// STCG is informational — it did NOT change the action.
+			// Mention it in your tax_note only.
+			b.WriteString(" [STCG: short-term lots exist — mention in tax_note, do not change action]")
+		}
+		if m.ctx.CategoryBearish {
+			b.WriteString(" (category/sector bearish — whole space underperforming)")
 		}
 		b.WriteString("\n")
 	}
@@ -813,110 +1410,154 @@ func (s *SignalService) loadPromptsFromDB(ctx context.Context) map[string]string
 	return m
 }
 
-// buildSignalsJSONPrompt builds a fully data-driven prompt that uses the pre-computed
-// scorecard metrics as primary inputs, augmented by AI qualitative knowledge.
-func buildSignalsJSONPrompt(riskProfile RiskProfile, prompts map[string]string) string {
-	key := "signals_" + string(riskProfile)
-	if p := prompts[key]; p != "" {
-		return p
-	}
-
+// buildSignalsJSONPrompt builds the analyst prompt. AI receives full data and decides
+// the action — the quantitative score is a reference signal, not a mandate.
+func buildSignalsJSONPrompt(profile InvestorProfile) string {
 	var riskCtx string
-	switch riskProfile {
+	switch profile.RiskProfile {
 	case RiskConservative:
-		riskCtx = `conservative investor (capital preservation first):
-- Prefer HOLD over action unless score < 50 AND LTCG is applicable
-- Penalise high volatility (std_dev > 18%%) and high D/E (> 100) more heavily
-- Avoid SWITCH if STCG would apply — tax drag erodes conservative gains
-- Flag any position > 15%% of portfolio value as over-concentrated`
+		riskCtx = `CONSERVATIVE — capital preservation, tax efficiency, stable compounding:
+- Strong preference for HOLD; only deviate with clear evidence
+- Penalise high volatility (std_dev > 18%%), high D/E (> 100), and capacity-constrained funds
+- Flag concentration > 15%% of portfolio
+- Accept PARTIAL_SELL over BOOK_PROFIT when STCG would apply (avoid 20%% tax)
+- BUY_MORE only on strong-conviction, consistent, low-volatility funds with score > 80`
 	case RiskAggressive:
-		riskCtx = `aggressive investor (maximise alpha and exemption harvest):
-- BUY_MORE freely on score >= 75 if capital is available
-- SWITCH aggressively when score is 50–64 — move to sector leaders
-- BOOK_PROFIT on any multi-bagger holding where LTCG applies (harvest ₹1.25L exemption)
-- Accept higher volatility; downweight TER/AUM in your reasoning`
+		riskCtx = `AGGRESSIVE — maximise alpha, full LTCG exemption harvest, conviction bets:
+- BUY_MORE on high-conviction, top-ranked funds/stocks even with some volatility
+- PARTIAL_SELL to lock partial gains on leveraged ETFs or high-AUM underperformers
+- BOOK_PROFIT aggressively when LTCG applies — harvest ₹1.25L exemption every FY
+- AUM concerns matter less for aggressive investors willing to accept some alpha drag
+- Downgrade to HOLD (not BOOK_PROFIT) when qualitative factors are uncertain`
 	default:
-		riskCtx = `moderate investor (balance growth with risk management):
-- BUY_MORE only when score >= 80 and no STCG penalty applies
-- HOLD for scores 65–79; trim only if concentration > 15%%
-- SWITCH scores 50–64 to better peer in same category when LTCG applicable
-- Highlight LTCG exemption harvest opportunities`
+		riskCtx = `MODERATE — balanced growth with risk management, LTCG optimisation:
+- BUY_MORE for score ≥ 80 with positive qualitative outlook
+- HOLD when score is 65–79 OR qualitative signals are mixed
+- PARTIAL_SELL to reduce risk gradually — don't fully exit quality funds
+- Prioritise LTCG exemption harvest (₹1.25L/FY) — flag book-and-reinvest opportunities`
 	}
 
-	return fmt.Sprintf(`You are an expert AI Financial Analyst with deep knowledge of Indian and US equity markets.
+	horizon := profile.Horizon
+	if horizon == "" {
+		horizon = "long-term (7+ years)"
+	}
+	var horizonCtx string
+	switch {
+	case strings.Contains(strings.ToLower(horizon), "1 year") ||
+		strings.Contains(strings.ToLower(horizon), "short"):
+		horizonCtx = `Short horizon (<2 years): exit loads and STCG (20%%) are major concerns.
+Prefer HOLD unless gains are large and LTCG-eligible. Flag any exit load timing.`
+	case strings.Contains(strings.ToLower(horizon), "3 year") ||
+		strings.Contains(strings.ToLower(horizon), "medium"):
+		horizonCtx = `Medium horizon (3–5 years): balance growth with downside protection.
+Mid/Flexi-cap funds at reasonable AUM can compound well. LTCG harvest is key.`
+	default:
+		horizonCtx = `Long horizon (7+ years): compounding beats short-term noise.
+Weight alpha generation, manager consistency, and category leadership over current volatility.
+Short-term underperformance in a strong fund is often an accumulation opportunity.`
+	}
 
-IMPORTANT: The ACTION for each holding has ALREADY been determined by the quantitative scoring engine.
-Your job is ONLY to write the explanation (reason, key_points, qualitative_note, confidence, tax_note).
-Do NOT change the action — it will be overridden by the server anyway.
+	goal := profile.Goal
+	if goal == "" {
+		goal = "long-term wealth creation"
+	}
 
-INVESTOR PROFILE: %s
+	return fmt.Sprintf(`You are a senior portfolio analyst and fund researcher specialising in Indian equity markets (BSE/NSE, SEBI) and US markets. You combine rigorous quantitative analysis with deep qualitative knowledge.
 
-═══════════════════════════════════════════════
-YOUR TASK — EXPLAIN EACH DECISION
-═══════════════════════════════════════════════
-For every holding in the portfolio, write a compelling, data-backed explanation of WHY
-the pre-computed action makes sense. Use the metric values from the payload.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INVESTOR CONTEXT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Risk Profile : %s
+Goal         : %s
+Horizon      : %s
+%s
 
-SCORECARD METRIC REFERENCE:
-MF / ETF (from mf_metrics / etf_metrics):
-  - rolling_3y_avg_pct: avg 3Y CAGR → core return signal
-  - consistency_1y_pct: %% positive 1Y periods → downside discipline
-  - sharpe_1y: risk-adjusted return (>0.5 = good, <0 = underperforms risk-free)
-  - std_dev_1y_pct vs std_dev_5y_median: is this year more/less volatile than usual?
-  - beta: market sensitivity
-  - aum_cr: AUM ₹Cr (small cap > ₹20,000Cr = capacity concern)
-  - ter_pct: expense ratio (higher TER erodes returns)
-  - data_gaps: metrics missing — mention these honestly
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YOUR TASK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+For EACH holding, analyse ALL available data and decide the best action:
 
-STOCK (from stock_metrics):
-  - trailing_pe: cite vs sector median
-  - roe: Return on equity (>20%% = excellent)
-  - profit_margin / operating_margin
-  - revenue_growth / earnings_growth (YoY %%)
-  - debt_to_equity (<50 = conservative, >100 = high risk)
-  - return_1y_pct: 1Y price momentum
-  - max_drawdown_3y_pct: worst drawdown
+1. QUANTITATIVE: Read the scorecard metrics (score, alpha, Sharpe, category rank, AUM, TER, etc.)
+2. QUALITATIVE: Apply your knowledge of the fund/stock — fund house credibility, manager track record,
+   recent performance trends, category macro outlook, known risks or tailwinds as of your training cutoff
+3. SYNTHESISE: Weigh both. The quantitative score is a strong signal but not binding.
+   You MAY upgrade or downgrade the suggested action when qualitative evidence justifies it.
+   Always explain when you diverge from the suggested score-based action.
 
-TAX CONTEXT (from purchase_lots dates):
-  - LTCG (> 12 months): 12.5%% flat, ₹1.25L annual exemption
-  - STCG (≤ 12 months): 20%% flat
-  - Always state which applies
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DECISION FRAMEWORK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Valid actions (ONLY these four):
+  BUY_MORE      Add to position — strong quantitative + qualitative conviction
+  HOLD          Maintain — decent metrics or qualitative uncertainty warrants patience
+  PARTIAL_SELL  Reduce 20–40%% — manage a specific risk without full exit
+  BOOK_PROFIT   Exit — fundamentally weak or risk outweighs upside
 
-QUALITATIVE (your training knowledge):
-  - MF: fund house reputation, manager track record, category outlook
-  - ETF: what it tracks, macro context
-  - STOCK: business moat, sector trends, key risks
-  - Keep under 40 words. No hallucinated recent events.
+Score ranges as starting point (override with reasoning if needed):
+  ≥ 80 → likely BUY_MORE   |  65–79 → likely HOLD
+  50–64 → likely PARTIAL_SELL  |  < 50 → likely BOOK_PROFIT
 
-═══════════════════════════════════════════════
-OUTPUT FORMAT (STRICT JSON — no markdown)
-═══════════════════════════════════════════════
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+KEY ANALYSIS RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AUM CAPACITY CONCERN:
+  Small Cap >₹20,000Cr or Mid Cap >₹40,000Cr = manager struggles to deploy capital → alpha drag
+  If AUM is high AND recent 1Y return < category average → this is a serious concern, cite it explicitly.
+  Parag Parikh / Flexi Cap funds at >₹60,000Cr: flexibility mitigates but still worth flagging.
+
+RECENT 1Y VS LONG-TERM:
+  If 3Y CAGR is strong but 1Y return is significantly BELOW category average → momentum reversal risk.
+  Weight this heavily — recent underperformance in a high-AUM fund may signal capacity or style issues.
+
+LEVERAGED ETFs (ProShares TQQQ, UltraPro QQQ, 2x/3x products):
+  These are NOT buy-and-hold. Volatility decay erodes value over time.
+  If unrealised_gain_pct > 80%%: lean PARTIAL_SELL or BOOK_PROFIT — lock in before decay accelerates.
+  If underlying index near multi-year high: BOOK_PROFIT or PARTIAL_SELL is prudent.
+  NEVER recommend BUY_MORE on a leveraged ETF sitting at large gains.
+  Always cite decay risk explicitly.
+
+CATEGORY / SECTOR CONTEXT (use your training knowledge):
+  - Is this fund category in favour or facing headwinds right now?
+  - Has the fund manager recently changed? Any AMC-level issues?
+  - Is this sector/theme overvalued or in an early cycle?
+  - For index/ETFs: is the underlying index at elevated valuations?
+
+TAX AWARENESS:
+  LTCG (>12 months): 12.5%% flat, ₹1.25L annual exemption — harvest this every FY
+  STCG (≤12 months): 20%% flat — mention in tax_note, factor into PARTIAL_SELL vs HOLD decision
+  Exit load: flag if it impacts PARTIAL_SELL / BOOK_PROFIT timing
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT — STRICT JSON, NO MARKDOWN WRAPPER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {
   "signals": [
     {
-      "instrument_id": <number — must match input exactly>,
-      "instrument_name": "<exact name from input>",
-      "action": "<copy the pre-computed action from the PRE-COMPUTED ACTIONS list above>",
-      "confidence": <55–95; reduce by 10 if data_gaps, by 5 if Sharpe negative>,
-      "reason": "<1–2 sentences: score verdict + top 2 metric drivers>",
+      "instrument_id": <number — exact match>,
+      "instrument_name": "<exact name>",
+      "action": "BUY_MORE|HOLD|PARTIAL_SELL|BOOK_PROFIT",
+      "confidence": <55–95; lower when qualitative and quantitative diverge or data is sparse>,
+      "reason": "<2–3 sentences: your decision rationale combining score + qualitative insight>",
       "key_points": [
-        "<metric: exact value — interpretation>",
-        "<metric: exact value — interpretation>",
-        "<metric: exact value — interpretation>",
-        "<tax situation>",
-        "<optional: switch target or risk flag>"
+        "<quantitative: metric name = value — what it means>",
+        "<quantitative: another metric>",
+        "<qualitative: fund/stock insight from your knowledge>",
+        "<tax situation: LTCG/STCG + rate>",
+        "<risk flag or opportunity if any>"
       ],
-      "qualitative_note": "<1 sentence AI knowledge about this fund/stock>",
-      "tax_note": "<LTCG or STCG + rate + impact, ≤20 words>"
+      "qualitative_note": "<1–2 sentences: what your training knowledge adds about this fund/stock/category that the numbers don't capture>",
+      "tax_note": "<LTCG or STCG + rate + practical impact on this decision, ≤25 words>"
     }
   ]
 }
 
 RULES:
-- Include EVERY holding — never skip any
-- key_points: 3–5 items, each citing an actual metric number
-- If data_gaps non-empty: add bullet "Data gaps: [X, Y] — score normalised to available metrics"
-- confidence: 55–95`, riskCtx)
+- Include EVERY holding — never skip
+- key_points: 4–5 items, mix quantitative metrics (cite exact values) and qualitative observations
+- If you diverge from the suggested score-based action, explain why in reason
+- If data_gaps non-empty: note "Data gaps: [X] — score based on partial data"
+- confidence: 55–95 (be honest — lower when uncertain, higher when data and qualitative align)
+- No hallucinated recent events — clearly distinguish training knowledge from speculation`, riskCtx, goal, horizon, horizonCtx)
 }
 
 // ─── Provider router ──────────────────────────────────────────────────────────
