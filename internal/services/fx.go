@@ -3,10 +3,12 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
@@ -75,6 +77,57 @@ func (f *FXService) toCache(ctx context.Context, rate decimal.Decimal) {
 		       updated_at  = NOW()`,
 		fxCacheKey, raw, expires,
 	)
+}
+
+// RateForDate returns the USD→INR rate for a specific date.
+// Checks fx_rates table first; fetches from Frankfurter historical API on miss and persists it.
+func (f *FXService) RateForDate(ctx context.Context, date time.Time) (decimal.Decimal, error) {
+	dateStr := date.Format("2006-01-02")
+	var rate decimal.Decimal
+	err := f.pool.QueryRow(ctx,
+		`SELECT usd_to_inr FROM fx_rates WHERE rate_date = $1`, dateStr,
+	).Scan(&rate)
+	if err == nil {
+		return rate, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return decimal.Zero, fmt.Errorf("fx_rates lookup: %w", err)
+	}
+	rate, err = f.fetchFrankfurterDate(ctx, dateStr)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	_, _ = f.pool.Exec(ctx,
+		`INSERT INTO fx_rates (rate_date, usd_to_inr, source)
+		 VALUES ($1, $2, 'frankfurter')
+		 ON CONFLICT (rate_date) DO NOTHING`,
+		dateStr, rate,
+	)
+	return rate, nil
+}
+
+func (f *FXService) fetchFrankfurterDate(ctx context.Context, dateStr string) (decimal.Decimal, error) {
+	url := "https://api.frankfurter.app/" + dateStr + "?from=USD&to=INR"
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return decimal.Zero, fmt.Errorf("frankfurter: HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		Rates map[string]float64 `json:"rates"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return decimal.Zero, err
+	}
+	inr, ok := body.Rates["INR"]
+	if !ok || inr == 0 {
+		return decimal.Zero, fmt.Errorf("INR rate missing in response")
+	}
+	return decimal.NewFromFloat(inr), nil
 }
 
 func (f *FXService) fetchFrankfurter(ctx context.Context) (decimal.Decimal, error) {

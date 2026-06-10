@@ -1339,6 +1339,7 @@ function NotificationsTab() {
   const [ltcgEnabled, setLtcgEnabled] = useState(false);
   const [ltcgPct, setLtcgPct] = useState(80);
   const [moodEnabled, setMoodEnabled] = useState(false);
+  const [transactionAlertEnabled, setTransactionAlertEnabled] = useState(true);
 
   // Sync from server once loaded
   const [synced, setSynced] = useState(false);
@@ -1352,6 +1353,7 @@ function NotificationsTab() {
     setLtcgEnabled(data.ltcg_alert_enabled ?? false);
     setLtcgPct(data.ltcg_threshold_pct ?? 80);
     setMoodEnabled(data.mood_alert_enabled ?? false);
+    setTransactionAlertEnabled(data.transaction_alert_enabled ?? true);
     setSynced(true);
   }
 
@@ -1376,6 +1378,7 @@ function NotificationsTab() {
       ltcg_alert_enabled: ltcgEnabled,
       ltcg_threshold_pct: ltcgPct,
       mood_alert_enabled: moodEnabled,
+      transaction_alert_enabled: transactionAlertEnabled,
     });
   };
 
@@ -1558,6 +1561,7 @@ function NotificationsTab() {
             {[
               { label: 'Portfolio all-time high 🏆', desc: 'Celebrate when your portfolio sets a new ATH', enabled: athEnabled, setEnabled: setAthEnabled },
               { label: 'Market mood extremes 😱🤑', desc: 'Alert on Extreme Fear (buy opportunity) or Extreme Greed (caution)', enabled: moodEnabled, setEnabled: setMoodEnabled },
+              { label: 'Transaction imported 📩', desc: 'Notify when a BUY or SELL is auto-imported from Gmail', enabled: transactionAlertEnabled, setEnabled: setTransactionAlertEnabled },
             ].map((item) => (
               <div key={item.label} className="flex items-center justify-between rounded-xl border border-border/40 bg-muted/20 px-3 py-2.5">
                 <div className="flex-1 min-w-0 pr-4">

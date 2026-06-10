@@ -872,6 +872,7 @@ export interface DiscordSettings {
   ltcg_alert_enabled: boolean;
   ltcg_threshold_pct: number;
   mood_alert_enabled: boolean;
+  transaction_alert_enabled: boolean;
 }
 
 export const discordSettingsApi = {

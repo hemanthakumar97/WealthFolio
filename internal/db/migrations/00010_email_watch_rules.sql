@@ -33,8 +33,22 @@ INSERT INTO email_watch_rules (name, platform, from_email, subject_query, parser
     'IndMoney – US Stock SIP',
     'INDMONEY',
     'transactions@transactions.indmoney.com',
-    'subject:"SIP instalment" OR subject:"SIP installment" subject:successful',
+    '{subject:"SIP instalment" subject:"SIP installment"} subject:successful',
     'indmoney_us'
+),
+(
+    'IndMoney – US Stock Order (SELL)',
+    'INDMONEY',
+    'transactions@transactions.indmoney.com',
+    'subject:"SELL order of" subject:successful',
+    'indmoney_us_order'
+),
+(
+    'IndMoney – US Stock Order (BUY)',
+    'INDMONEY',
+    'transactions@transactions.indmoney.com',
+    'subject:"BUY order of" subject:successful',
+    'indmoney_us_order'
 );
 
 -- +goose StatementEnd
@@ -43,3 +57,4 @@ INSERT INTO email_watch_rules (name, platform, from_email, subject_query, parser
 -- +goose StatementBegin
 DROP TABLE IF EXISTS email_watch_rules;
 -- +goose StatementEnd
+

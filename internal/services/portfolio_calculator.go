@@ -325,14 +325,30 @@ type ClosedPositionInfo struct {
 }
 
 func (c *PortfolioCalculator) ClosedPositions(ctx context.Context, f FilterParams) ([]ClosedPositionInfo, error) {
-	usdINR, err := c.fx.USDToINR(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("closed positions: %w", err)
+	// Per-date FX rate cache; populated lazily via Frankfurter historical API.
+	rateCache := map[string]float64{}
+	rateForDate := func(dateStr string) float64 {
+		if r, ok := rateCache[dateStr]; ok {
+			return r
+		}
+		d, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			rateCache[dateStr] = 84.0
+			return 84.0
+		}
+		rate, err := c.fx.RateForDate(ctx, d)
+		if err != nil {
+			live, _ := c.fx.USDToINR(ctx)
+			rateCache[dateStr], _ = live.Float64()
+		} else {
+			rateCache[dateStr], _ = rate.Float64()
+		}
+		return rateCache[dateStr]
 	}
-	usdInrFloat, _ := usdINR.Float64()
 
 	// Walk all transactions in date order per instrument, tracking FIFO lots and
 	// accumulating the cost basis + proceeds for every sell.
+	// USD amounts are converted to INR inline at each transaction's historical rate.
 	rows, err := c.pool.Query(ctx, `
 		SELECT t.instrument_id, t.transaction_type,
 		       t.quantity::float, t.amount::float, t.platform,
@@ -375,13 +391,19 @@ func (c *PortfolioCalculator) ClosedPositions(ctx context.Context, f FilterParam
 		}
 		s.platform = platform
 
+		isUSD := strings.EqualFold(s.currency, "USD")
+
 		switch txType {
 		case "BUY", "SWITCH_IN":
 			if qty <= 0 {
 				continue
 			}
+			costINR := amount
+			if isUSD {
+				costINR = amount * rateForDate(txDate)
+			}
 			s.unitsBought += qty
-			s.lots = append(s.lots, fifoLot{qty: qty, cost: amount / qty})
+			s.lots = append(s.lots, fifoLot{qty: qty, cost: costINR / qty})
 
 		case "BONUS":
 			if qty > 0 {
@@ -391,9 +413,13 @@ func (c *PortfolioCalculator) ClosedPositions(ctx context.Context, f FilterParam
 
 		case "SELL", "SWITCH_OUT":
 			s.unitsSold += qty
-			s.sellProceeds += amount
+			proceedsINR := amount
+			if isUSD {
+				proceedsINR = amount * rateForDate(txDate)
+			}
+			s.sellProceeds += proceedsINR
 			s.lastSellDate = txDate
-			// consume lots FIFO, accumulating cost basis of sold units
+			// consume lots FIFO; lot costs are already in INR
 			remaining := qty
 			for len(s.lots) > 0 && remaining > 0.000001 {
 				if s.lots[0].qty <= remaining+0.000001 {
@@ -436,11 +462,6 @@ func (c *PortfolioCalculator) ClosedPositions(ctx context.Context, f FilterParam
 		status := "CLOSED"
 		if unitsHeld > 0.000001 && costBasisHeld >= 50 {
 			status = "PARTIAL"
-		}
-
-		if strings.EqualFold(s.currency, "USD") {
-			s.costOfSold *= usdInrFloat
-			s.sellProceeds *= usdInrFloat
 		}
 
 		var avgBuy, avgSell float64

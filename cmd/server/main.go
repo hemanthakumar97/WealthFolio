@@ -64,6 +64,8 @@ func run() error {
 		LookbackDays:       cfg.GmailLookbackDays,
 		ZerodhaPDFPassword: cfg.ZerodhaPDFPassword,
 	})
+	discordSvcForWatcher := services.NewDiscordService(pool)
+	gmailWatcher.WithDiscordService(discordSvcForWatcher)
 	slog.Info("gmail watcher ready", "hour_ist", cfg.GmailWatcherHour, "lookback_days", cfg.GmailLookbackDays)
 
 	// Start background scheduler.

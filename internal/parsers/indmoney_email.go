@@ -194,3 +194,75 @@ func amountFromSubject(subject string) string {
 	}
 	return ""
 }
+
+var (
+	reOETicker = regexp.MustCompile(`(?i)(?:ticker|stock\s*symbol|symbol|stock)\s*[:\n]+\s*([A-Z]{1,10})\b`)
+	reOEAmount = regexp.MustCompile(`(?i)(?:amount|order\s*amount|filled\s*amount|transaction\s*amount)\s*[:\n]+\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)`)
+	reOEPrice  = regexp.MustCompile(`(?i)(?:price|average\s*price|avg\.?\s*price|executed\s*price)\s*[:\n]+\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)`)
+	reOEShares = regexp.MustCompile(`(?i)(?:shares|quantity|qty|filled\s*quantity)\s*[:\n]+\s*([0-9,]+(?:\.[0-9]+)?)`)
+)
+
+// IndMoneyOrderEmailParser extracts NormalizedTransactions from IndMoney US
+// stock buy/sell order confirmation emails.
+type IndMoneyOrderEmailParser struct{}
+
+// ParseEmail parses the HTML body of an IndMoney US stock order confirmation email.
+func (p *IndMoneyOrderEmailParser) ParseEmail(htmlBody, messageID, subject string, receivedAt time.Time) ([]NormalizedTransaction, []error) {
+	plain := htmlToPlain(htmlBody)
+	match := func(re *regexp.Regexp) string {
+		m := re.FindStringSubmatch(plain)
+		if len(m) > 1 {
+			return strings.ReplaceAll(strings.TrimSpace(m[1]), ",", "")
+		}
+		return ""
+	}
+
+	ticker := match(reOETicker)
+	amountRaw := match(reOEAmount)
+	priceRaw := match(reOEPrice)
+	sharesRaw := match(reOEShares)
+
+	if ticker == "" {
+		return nil, []error{fmt.Errorf("could not find ticker in email")}
+	}
+
+	amount, err := parseDecimal(amountRaw)
+	if err != nil || amount.IsZero() {
+		return nil, []error{fmt.Errorf("invalid amount %q", amountRaw)}
+	}
+	price, err := parseDecimal(priceRaw)
+	if err != nil || price.IsZero() {
+		return nil, []error{fmt.Errorf("invalid price %q", priceRaw)}
+	}
+	shares, err := parseDecimal(sharesRaw)
+	if err != nil || shares.IsZero() {
+		return nil, []error{fmt.Errorf("invalid shares %q", sharesRaw)}
+	}
+
+	txType := domain.TxBuy
+	if strings.Contains(strings.ToLower(subject), "sell order") {
+		txType = domain.TxSell
+	}
+
+	tx := NormalizedTransaction{
+		InstrumentName:  ticker,
+		AssetType:       domain.AssetTypeUSFund,
+		Currency:        domain.CurrencyUSD,
+		TransactionDate: receivedAt.UTC().Truncate(24 * time.Hour),
+		TransactionType: txType,
+		Quantity:        shares,
+		Price:           price,
+		Amount:          amount,
+		Platform:        domain.PlatformINDMoney,
+		RowNumber:       1,
+		OriginalRow: map[string]string{
+			"gmail_message_id": messageID,
+			"subject":          subject,
+			"ticker":           ticker,
+			"amount":           amountRaw,
+			"price":            priceRaw,
+			"shares":           sharesRaw,
+		},
+	}
+	return []NormalizedTransaction{tx}, nil
+}

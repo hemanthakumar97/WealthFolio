@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -14,17 +15,18 @@ import (
 
 // DiscordSettings holds all Discord webhook + alert configuration.
 type DiscordSettings struct {
-	WebhookURL             string  `json:"webhook_url"`
-	Enabled                bool    `json:"enabled"`
-	DrawdownAlertEnabled   bool    `json:"drawdown_alert_enabled"`
-	DrawdownThreshold      float64 `json:"drawdown_threshold"` // e.g. 10.0 means -10%
+	WebhookURL           string  `json:"webhook_url"`
+	Enabled              bool    `json:"enabled"`
+	DrawdownAlertEnabled bool    `json:"drawdown_alert_enabled"`
+	DrawdownThreshold    float64 `json:"drawdown_threshold"` // e.g. 10.0 means -10%
 	// Additional alert types
-	MoverAlertEnabled bool    `json:"mover_alert_enabled"`
-	MoverThreshold    float64 `json:"mover_threshold"`    // single-day % drop, default 3
-	ATHAlertEnabled   bool    `json:"ath_alert_enabled"`
-	LTCGAlertEnabled  bool    `json:"ltcg_alert_enabled"`
-	LTCGThresholdPct  float64 `json:"ltcg_threshold_pct"` // % of ₹1.25L to alert at, default 80
-	MoodAlertEnabled  bool    `json:"mood_alert_enabled"`
+	MoverAlertEnabled       bool    `json:"mover_alert_enabled"`
+	MoverThreshold          float64 `json:"mover_threshold"` // single-day % drop, default 3
+	ATHAlertEnabled         bool    `json:"ath_alert_enabled"`
+	LTCGAlertEnabled        bool    `json:"ltcg_alert_enabled"`
+	LTCGThresholdPct        float64 `json:"ltcg_threshold_pct"` // % of ₹1.25L to alert at, default 80
+	MoodAlertEnabled        bool    `json:"mood_alert_enabled"`
+	TransactionAlertEnabled bool    `json:"transaction_alert_enabled"`
 }
 
 // alertState persists the last drawdown percentage at the time of alert per key.
@@ -35,7 +37,7 @@ type alertState struct {
 
 // DrawdownAlert describes a single instrument or portfolio drawdown breach.
 type DrawdownAlert struct {
-	Key            string  // "portfolio" or "instr_<id>"
+	Key            string // "portfolio" or "instr_<id>"
 	InstrumentName string
 	PeakValue      float64
 	CurrentValue   float64
@@ -99,6 +101,8 @@ func (s *DiscordService) GetSettings(ctx context.Context) (*DiscordSettings, err
 			pf(&cfg.LTCGThresholdPct)
 		case "discord_mood_alert_enabled":
 			cfg.MoodAlertEnabled = v == "true"
+		case "discord_transaction_alert_enabled":
+			cfg.TransactionAlertEnabled = v == "true"
 		}
 	}
 	return cfg, rows.Err()
@@ -124,7 +128,8 @@ func (s *DiscordService) SaveSettings(ctx context.Context, cfg *DiscordSettings)
 			('discord_ath_alert_enabled',      $6, NOW()),
 			('discord_ltcg_alert_enabled',     $7, NOW()),
 			('discord_ltcg_threshold_pct',     $8, NOW()),
-			('discord_mood_alert_enabled',     $9, NOW())
+			('discord_mood_alert_enabled',     $9, NOW()),
+			('discord_transaction_alert_enabled', $10, NOW())
 		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
 	`,
 		b(cfg.Enabled), b(cfg.DrawdownAlertEnabled), f(cfg.DrawdownThreshold),
@@ -132,6 +137,7 @@ func (s *DiscordService) SaveSettings(ctx context.Context, cfg *DiscordSettings)
 		b(cfg.ATHAlertEnabled),
 		b(cfg.LTCGAlertEnabled), f(cfg.LTCGThresholdPct),
 		b(cfg.MoodAlertEnabled),
+		b(cfg.TransactionAlertEnabled),
 	)
 	if err != nil {
 		return err
@@ -149,13 +155,22 @@ func (s *DiscordService) SaveSettings(ctx context.Context, cfg *DiscordSettings)
 // ─── Discord webhook sending ──────────────────────────────────────────────────
 
 type discordEmbed struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Color       int    `json:"color"`
-	Timestamp   string `json:"timestamp,omitempty"`
-	Footer      *struct {
-		Text string `json:"text"`
-	} `json:"footer,omitempty"`
+	Title       string         `json:"title"`
+	Description string         `json:"description"`
+	Color       int            `json:"color"`
+	Timestamp   string         `json:"timestamp,omitempty"`
+	Fields      []discordField `json:"fields,omitempty"`
+	Footer      *discordFooter `json:"footer,omitempty"`
+}
+
+type discordField struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Inline bool   `json:"inline"`
+}
+
+type discordFooter struct {
+	Text string `json:"text"`
 }
 
 type discordPayload struct {
@@ -179,6 +194,34 @@ func (s *DiscordService) sendWebhook(webhookURL string, payload discordPayload) 
 	return nil
 }
 
+func (s *DiscordService) SendTransactionImportAlert(ctx context.Context, txType, instrumentName string, qty, priceUSD, amountUSD float64, date, platform string) error {
+	cfg, err := s.GetSettings(ctx)
+	if err != nil || !cfg.Enabled || !cfg.TransactionAlertEnabled || cfg.WebhookURL == "" {
+		return nil
+	}
+	emoji := "🟢"
+	color := 3066993
+	if strings.ToUpper(txType) == "SELL" {
+		emoji = "🔴"
+		color = 15158332
+	}
+	title := fmt.Sprintf("%s %s Transaction Recorded", emoji, strings.ToUpper(txType))
+	embed := discordEmbed{
+		Title: title,
+		Color: color,
+		Fields: []discordField{
+			{Name: "Instrument", Value: instrumentName, Inline: true},
+			{Name: "Platform", Value: platform, Inline: true},
+			{Name: "Date", Value: date, Inline: true},
+			{Name: "Shares", Value: fmt.Sprintf("%.6g", qty), Inline: true},
+			{Name: "Price", Value: fmt.Sprintf("$%.2f", priceUSD), Inline: true},
+			{Name: "Amount", Value: fmt.Sprintf("$%.2f", amountUSD), Inline: true},
+		},
+		Footer: &discordFooter{Text: "WealthFolio · Gmail auto-import"},
+	}
+	return s.sendWebhook(cfg.WebhookURL, discordPayload{Embeds: []discordEmbed{embed}})
+}
+
 // SendTestMessage posts a test message to verify the webhook is working.
 func (s *DiscordService) SendTestMessage(ctx context.Context) error {
 	cfg, err := s.GetSettings(ctx)
@@ -188,9 +231,7 @@ func (s *DiscordService) SendTestMessage(ctx context.Context) error {
 	if cfg.WebhookURL == "" {
 		return fmt.Errorf("no webhook URL configured")
 	}
-	footer := &struct {
-		Text string `json:"text"`
-	}{Text: "WealthFolio Alert"}
+	footer := &discordFooter{Text: "WealthFolio Alert"}
 	return s.sendWebhook(cfg.WebhookURL, discordPayload{
 		Embeds: []discordEmbed{{
 			Title:       "✅ WealthFolio — Test Alert",
@@ -212,9 +253,7 @@ func (s *DiscordService) SendAllTestAlerts(ctx context.Context) error {
 	if cfg.WebhookURL == "" {
 		return fmt.Errorf("no webhook URL configured")
 	}
-	footer := &struct {
-		Text string `json:"text"`
-	}{Text: "WealthFolio Alert — preview only"}
+	footer := &discordFooter{Text: "WealthFolio Alert — preview only"}
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	embeds := []discordEmbed{
@@ -337,9 +376,7 @@ func (s *DiscordService) CheckAndSendDrawdownAlerts(ctx context.Context) error {
 	}
 
 	// Build embeds (Discord max 10 per message).
-	footer := &struct {
-		Text string `json:"text"`
-	}{Text: "WealthFolio Alert"}
+	footer := &discordFooter{Text: "WealthFolio Alert"}
 
 	var embeds []discordEmbed
 	for i, a := range toSend {
@@ -549,9 +586,7 @@ func (s *DiscordService) checkBigMovers(ctx context.Context, cfg *DiscordSetting
 	}
 	defer rows.Close()
 
-	footer := &struct {
-		Text string `json:"text"`
-	}{Text: "WealthFolio Alert"}
+	footer := &discordFooter{Text: "WealthFolio Alert"}
 
 	var embeds []discordEmbed
 	for rows.Next() {
@@ -609,9 +644,7 @@ func (s *DiscordService) checkATH(ctx context.Context, cfg *DiscordSettings) err
 	state["ath_date"] = alertState{LastDate: today}
 	_ = s.saveAlertStates(ctx, state)
 
-	footer := &struct {
-		Text string `json:"text"`
-	}{Text: "WealthFolio Alert"}
+	footer := &discordFooter{Text: "WealthFolio Alert"}
 	return s.sendWebhook(cfg.WebhookURL, discordPayload{
 		Embeds: []discordEmbed{{
 			Title: "🏆 Portfolio All-Time High!",
@@ -674,9 +707,7 @@ func (s *DiscordService) checkLTCG(ctx context.Context, cfg *DiscordSettings) er
 	state["ltcg"] = alertState{LastDD: ltcgEstimate, LastDate: today}
 	_ = s.saveAlertStates(ctx, state)
 
-	footer := &struct {
-		Text string `json:"text"`
-	}{Text: "WealthFolio Alert"}
+	footer := &discordFooter{Text: "WealthFolio Alert"}
 	return s.sendWebhook(cfg.WebhookURL, discordPayload{
 		Embeds: []discordEmbed{{
 			Title: "🏛️ LTCG Tax Milestone Alert",
@@ -714,16 +745,14 @@ func (s *DiscordService) checkMarketMood(ctx context.Context, cfg *DiscordSettin
 	_ = s.saveAlertStates(ctx, state)
 
 	title, desc, color := moodEmbed(mmiMood, mmiValue)
-	footer := &struct {
-		Text string `json:"text"`
-	}{Text: "WealthFolio Alert — Market Mood Index"}
+	footer := &discordFooter{Text: "WealthFolio Alert — Market Mood Index"}
 	return s.sendWebhook(cfg.WebhookURL, discordPayload{
 		Embeds: []discordEmbed{{
-			Title:     title,
+			Title:       title,
 			Description: desc,
-			Color:     color,
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			Footer:    footer,
+			Color:       color,
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			Footer:      footer,
 		}},
 	})
 }

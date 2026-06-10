@@ -24,30 +24,37 @@ import (
 // The OAuth2 refresh token is stored in app_settings (key: gmail_refresh_token),
 // set via the Settings → Integrations OAuth flow — not from env vars.
 type GmailConfig struct {
-	LookbackDays int
+	LookbackDays       int
 	ZerodhaPDFPassword string // Password for Zerodha contract note PDFs
 }
 
 // GmailWatcher polls Gmail for Groww MF allotment and Zerodha contract note
 // emails, and auto-imports the extracted transactions.
 type GmailWatcher struct {
-	pool          *pgxpool.Pool
-	importSvc     *ImportService
-	cfg           GmailConfig
-	growwParser   *parsers.GrowwEmailParser
-	zerodhaParser *parsers.ZerodhaContractNoteParser
-	indmoneyParser *parsers.IndMoneyEmailParser
+	pool                *pgxpool.Pool
+	importSvc           *ImportService
+	discordSvc          *DiscordService
+	cfg                 GmailConfig
+	growwParser         *parsers.GrowwEmailParser
+	zerodhaParser       *parsers.ZerodhaContractNoteParser
+	indmoneyParser      *parsers.IndMoneyEmailParser
+	indmoneyOrderParser *parsers.IndMoneyOrderEmailParser
 }
 
 func NewGmailWatcher(pool *pgxpool.Pool, importSvc *ImportService, cfg GmailConfig) *GmailWatcher {
 	return &GmailWatcher{
-		pool:           pool,
-		importSvc:      importSvc,
-		cfg:            cfg,
-		growwParser:    &parsers.GrowwEmailParser{},
-		zerodhaParser:  &parsers.ZerodhaContractNoteParser{},
-		indmoneyParser: &parsers.IndMoneyEmailParser{},
+		pool:                pool,
+		importSvc:           importSvc,
+		cfg:                 cfg,
+		growwParser:         &parsers.GrowwEmailParser{},
+		zerodhaParser:       &parsers.ZerodhaContractNoteParser{},
+		indmoneyParser:      &parsers.IndMoneyEmailParser{},
+		indmoneyOrderParser: &parsers.IndMoneyOrderEmailParser{},
 	}
+}
+
+func (w *GmailWatcher) WithDiscordService(d *DiscordService) {
+	w.discordSvc = d
 }
 
 // EmailWatchRule mirrors the email_watch_rules DB row.
@@ -86,7 +93,9 @@ func (w *GmailWatcher) Run(ctx context.Context) error {
 		p, sk, er := w.runQuery(ctx, svc, query, func(ctx context.Context, svc *gmail.Service, msgID string) error {
 			return w.processWithRule(ctx, svc, msgID, rule)
 		})
-		totalProcessed += p; totalSkipped += sk; totalErrors += er
+		totalProcessed += p
+		totalSkipped += sk
+		totalErrors += er
 	}
 
 	slog.Info("gmail watcher: run complete",
@@ -282,6 +291,10 @@ func (w *GmailWatcher) DryRun(ctx context.Context) ([]DryRunResult, error) {
 			case "indmoney_us":
 				html := extractHTMLPart(msg.Payload)
 				txs, parseErrs = w.indmoneyParser.ParseEmail(html, m.Id, subject, receivedAt)
+
+			case "indmoney_us_order":
+				html := extractHTMLPart(msg.Payload)
+				txs, parseErrs = w.indmoneyOrderParser.ParseEmail(html, m.Id, subject, receivedAt)
 			}
 
 			for _, pe := range parseErrs {
@@ -350,6 +363,8 @@ func (w *GmailWatcher) processWithRule(ctx context.Context, svc *gmail.Service, 
 		return w.processZerodhaMessage(ctx, svc, msgID)
 	case "indmoney_us":
 		return w.processIndMoneyMessage(ctx, svc, msgID)
+	case "indmoney_us_order":
+		return w.processIndMoneyOrderMessage(ctx, svc, msgID)
 	default:
 		return fmt.Errorf("unknown parser_type: %s", rule.ParserType)
 	}
@@ -413,6 +428,10 @@ func (w *GmailWatcher) processGrowwMessage(ctx context.Context, svc *gmail.Servi
 		"msg_id", msgID, "subject", subject,
 		"imported", result.Imported, "duplicates", result.Duplicates, "errors", result.Errors)
 
+	if result.Imported > 0 {
+		w.notifyTransactionImport(ctx, txs)
+	}
+
 	recStatus := "OK"
 	errMsg := ""
 	if result.Errors > 0 && result.Imported == 0 {
@@ -421,7 +440,6 @@ func (w *GmailWatcher) processGrowwMessage(ctx context.Context, svc *gmail.Servi
 	}
 	return w.recordImport(ctx, msgID, msg.ThreadId, sender, subject, receivedAt, recStatus, uploadID, errMsg)
 }
-
 
 // processZerodhaMessage downloads the PDF attachment from a Zerodha contract
 // note email, decrypts it with the PAN, extracts text, and imports trades.
@@ -540,6 +558,29 @@ func max(a, b int) int {
 	return b
 }
 
+func (w *GmailWatcher) notifyTransactionImport(ctx context.Context, txs []parsers.NormalizedTransaction) {
+	if w.discordSvc == nil {
+		return
+	}
+	for _, tx := range txs {
+		qty, _ := tx.Quantity.Float64()
+		price, _ := tx.Price.Float64()
+		amount, _ := tx.Amount.Float64()
+		if err := w.discordSvc.SendTransactionImportAlert(
+			ctx,
+			tx.TransactionType,
+			tx.InstrumentName,
+			qty,
+			price,
+			amount,
+			tx.TransactionDate.Format("2006-01-02"),
+			tx.Platform,
+		); err != nil {
+			slog.Warn("gmail watcher: discord transaction alert failed",
+				"instrument", tx.InstrumentName, "type", tx.TransactionType, "err", err)
+		}
+	}
+}
 
 // processIndMoneyMessage fetches, parses, and imports an IndMoney US stock SIP email.
 func (w *GmailWatcher) processIndMoneyMessage(ctx context.Context, svc *gmail.Service, msgID string) error {
@@ -588,6 +629,69 @@ func (w *GmailWatcher) processIndMoneyMessage(ctx context.Context, svc *gmail.Se
 	slog.Info("gmail watcher: indmoney SIP imported",
 		"msg_id", msgID, "subject", subject,
 		"imported", result.Imported, "duplicates", result.Duplicates)
+	if result.Imported > 0 {
+		w.notifyTransactionImport(ctx, txs)
+	}
+
+	recStatus := "OK"
+	errMsg := ""
+	if result.Errors > 0 && result.Imported == 0 {
+		recStatus = "ERROR"
+		errMsg = strings.Join(result.ErrorMsgs, "; ")
+	}
+	return w.recordImport(ctx, msgID, msg.ThreadId, sender, subject, receivedAt, recStatus, uploadID, errMsg)
+}
+
+// processIndMoneyOrderMessage fetches, parses, and imports an IndMoney US stock order email.
+func (w *GmailWatcher) processIndMoneyOrderMessage(ctx context.Context, svc *gmail.Service, msgID string) error {
+	msg, err := svc.Users.Messages.Get("me", msgID).Format("full").Context(ctx).Do()
+	if err != nil {
+		return fmt.Errorf("fetch message: %w", err)
+	}
+
+	subject := headerValue(msg.Payload.Headers, "Subject")
+	sender := headerValue(msg.Payload.Headers, "From")
+	receivedAt := time.Unix(msg.InternalDate/1000, 0)
+
+	htmlBody := extractHTMLPart(msg.Payload)
+	if htmlBody == "" {
+		return w.recordImport(ctx, msgID, msg.ThreadId, sender, subject, receivedAt, "SKIPPED", 0, "no HTML body")
+	}
+
+	txs, parseErrs := w.indmoneyOrderParser.ParseEmail(htmlBody, msgID, subject, receivedAt)
+	for _, pe := range parseErrs {
+		slog.Warn("gmail watcher: indmoney order parse error", "msg_id", msgID, "err", pe)
+	}
+	if len(txs) == 0 {
+		return w.recordImport(ctx, msgID, msg.ThreadId, sender, subject, receivedAt, "SKIPPED", 0, "no transactions extracted")
+	}
+
+	uploadID, err := w.importSvc.CreateUploadRow(ctx,
+		fmt.Sprintf("indmoney-order:%s", msgID),
+		0,
+		domain.PlatformINDMoney,
+		0,
+	)
+	if err != nil {
+		return fmt.Errorf("create upload row: %w", err)
+	}
+
+	result := w.importSvc.PersistRows(ctx, uploadID, txs, nil)
+	status := domain.UploadCompleted
+	if result.Imported == 0 && result.Errors > 0 {
+		status = domain.UploadFailed
+	} else if result.Errors > 0 || result.Duplicates > 0 {
+		status = domain.UploadPartial
+	}
+	total := result.Imported + result.Duplicates + result.Errors
+	w.importSvc.FinalizeUploadRow(ctx, uploadID, status, total, result.Imported, result.Duplicates, result.Errors, result.ErrorMsgs)
+
+	slog.Info("gmail watcher: indmoney order imported",
+		"msg_id", msgID, "subject", subject,
+		"imported", result.Imported, "duplicates", result.Duplicates)
+	if result.Imported > 0 {
+		w.notifyTransactionImport(ctx, txs)
+	}
 
 	recStatus := "OK"
 	errMsg := ""
