@@ -34,6 +34,7 @@ type GmailWatcher struct {
 	pool                *pgxpool.Pool
 	importSvc           *ImportService
 	discordSvc          *DiscordService
+	fxSvc               *FXService
 	cfg                 GmailConfig
 	growwParser         *parsers.GrowwEmailParser
 	zerodhaParser       *parsers.ZerodhaContractNoteParser
@@ -55,6 +56,38 @@ func NewGmailWatcher(pool *pgxpool.Pool, importSvc *ImportService, cfg GmailConf
 
 func (w *GmailWatcher) WithDiscordService(d *DiscordService) {
 	w.discordSvc = d
+}
+
+func (w *GmailWatcher) WithFXService(f *FXService) {
+	w.fxSvc = f
+}
+
+// convertSIPAmountToUSD divides the INR amount and derived price by the
+// USD→INR rate on the transaction date. IndMoney SIP emails always express
+// the SIP amount in ₹ (e.g. "SIP amount ₹3500"), so we must convert before
+// storing — the instrument currency is USD.
+func (w *GmailWatcher) convertSIPAmountToUSD(ctx context.Context, txs []parsers.NormalizedTransaction) []parsers.NormalizedTransaction {
+	if w.fxSvc == nil {
+		slog.Warn("gmail watcher: fxSvc not set, storing IndMoney SIP amounts as INR")
+		return txs
+	}
+	out := make([]parsers.NormalizedTransaction, len(txs))
+	copy(out, txs)
+	for i, tx := range out {
+		rate, err := w.fxSvc.RateForDate(ctx, tx.TransactionDate)
+		if err != nil || rate.IsZero() {
+			slog.Warn("gmail watcher: fx rate unavailable, skipping INR→USD conversion",
+				"date", tx.TransactionDate.Format("2006-01-02"), "err", err)
+			continue
+		}
+		out[i].Amount = tx.Amount.Div(rate).Round(6)
+		out[i].Price = tx.Price.Div(rate).Round(6)
+		slog.Info("gmail watcher: converted SIP INR→USD",
+			"symbol", tx.InstrumentName,
+			"inr_amount", tx.Amount, "usd_amount", out[i].Amount,
+			"rate", rate)
+	}
+	return out
 }
 
 // EmailWatchRule mirrors the email_watch_rules DB row.
@@ -605,6 +638,9 @@ func (w *GmailWatcher) processIndMoneyMessage(ctx context.Context, svc *gmail.Se
 	if len(txs) == 0 {
 		return w.recordImport(ctx, msgID, msg.ThreadId, sender, subject, receivedAt, "SKIPPED", 0, "no transactions extracted")
 	}
+
+	// SIP emails report the amount in INR (e.g. ₹3500); convert to USD before storing.
+	txs = w.convertSIPAmountToUSD(ctx, txs)
 
 	uploadID, err := w.importSvc.CreateUploadRow(ctx,
 		fmt.Sprintf("indmoney-sip:%s", msgID),
