@@ -54,8 +54,7 @@ func NewRouter(deps Deps) http.Handler {
 	instrH := NewInstrumentsHandler(deps.Pool, priceFetcher)
 	portfolioH := NewPortfolioHandler(deps.Pool, portfolioCalc)
 	trendsH := NewTrendsHandler(deps.Pool, snapshotSvc)
-	categoriesH := NewCategoriesHandler(deps.Pool)
-	allocationsH := NewAllocationsHandler(deps.Pool)
+	allocationsH := NewAllocationsHandler(deps.Pool, services.NewSignalService(deps.Pool))
 
 	moodSvc := services.NewMarketMoodService(deps.Pool)
 	mmiSvc := services.NewTickertapeService(deps.Pool)
@@ -133,22 +132,14 @@ func NewRouter(deps Deps) http.Handler {
 				r.Get("/{id}/prices", instrH.Prices)
 			})
 
-			r.Route("/categories", func(r chi.Router) {
-				r.Get("/", categoriesH.List)
-				r.Post("/", categoriesH.Create)
-				r.Get("/{id}", categoriesH.Get)
-				r.Put("/{id}", categoriesH.Update)
-				r.Delete("/{id}", categoriesH.Delete)
-				r.Get("/{id}/instruments", categoriesH.ListInstruments)
-				r.Post("/{id}/instruments", categoriesH.AddInstrument)
-				r.Delete("/{id}/instruments/{instr_id}", categoriesH.RemoveInstrument)
-			})
-
 			r.Route("/allocations", func(r chi.Router) {
 				r.Get("/", allocationsH.Overview)
 				r.Put("/instruments/{id}", allocationsH.UpdateInstrument)
 				r.Put("/categories/{name}", allocationsH.UpdateCategory)
 				r.Post("/calculate-distribution", allocationsH.CalculateDistribution)
+				r.Post("/seed-from-holdings", allocationsH.SeedFromHoldings)
+				r.With(longTimeout).Post("/ai-suggest", allocationsH.AISuggest)
+				r.Post("/apply-targets", allocationsH.ApplyTargets)
 			})
 
 			// AI Signal

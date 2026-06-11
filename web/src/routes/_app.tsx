@@ -10,7 +10,6 @@ import {
   Gauge,
   Archive,
   Database,
-  Tags,
   Settings,
   LogOut,
   Eye,
@@ -58,7 +57,6 @@ const navItems = [
   { to: '/analysis', label: 'Analyser', icon: Zap },
   { to: '/closed-positions', label: 'Closed', icon: Archive },
   { to: '/backfill', label: 'Backfill', icon: Database },
-  { to: '/categories', label: 'Categories', icon: Tags },
 ] as const;
 
 function AppLayout() {

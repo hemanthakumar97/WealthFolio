@@ -408,6 +408,11 @@ Build a structured JSON portfolio payload from FIFO-active holdings + scorecard 
 | `StreamHoldingsAnalysis` `signal_service.go:522` | `ai_prompts` | — | LLM streaming |
 | `StreamStockAnalysis` `signal_service.go:533` | `ai_prompts` | — | LLM streaming |
 | `FetchHoldingsSignals` `signal_service.go:546` | `ai_prompts` | — | LLM JSON |
+| `SuggestAllocations(ctx, cfg, in)` `allocation_ai.go` | `transactions`, `prices`, `instrument_allocations`, `instrument_scores` (cache), `market_data`, `ai_prompts` | — | LLM JSON |
+
+### `allocation_ai.go` — AI allocation targets
+
+`SignalService.SuggestAllocations` powers `/allocations/ai-suggest`. It builds a **trend payload with no external calls**: per-instrument trailing 1M/3M/6M/1Y returns (correlated subqueries over `prices`, off the latest price date), effective `alloc_category`, current weights, cached scorecard metrics via `BuildPortfolioPayloadFromCache` (`zero1_score`/`relative_rank`/`category_bearish`), a deterministic `deriveTrend` tag, and market mood. It interpolates risk-profile **guardrail bands** (`riskBands`) into the `allocation_suggest` prompt (DB override or `defaultAllocPrompt` fallback), calls `callProviderJSON`, strips fences, parses, then **validates**: clamps to [0,100], renormalizes category targets to sum 100, and `scaleToTarget` makes each category's instrument targets sum to that category's target. Returns review-only data — never persists (apply goes through `/allocations/apply-targets`). **Gotcha:** suggestions only span categories the investor actually holds, so bands are soft guidance, not hard clamps.
 
 ### Critical algorithm: deterministic action vs AI reasoning
 

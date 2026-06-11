@@ -514,62 +514,34 @@ export const instrumentsApi = {
     }),
 };
 
-// --- Categories ---
-
-export interface Category {
-  id: number;
-  name: string;
-  description: string | null;
-  color: string | null;
-  instrument_count: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface CategoryInstrument {
-  instrument_id: number;
-  instrument_name: string;
-  isin: string | null;
-  asset_type: string;
-  weight: number;
-}
-
-export const categoriesApi = {
-  list: () => request<Category[]>('/api/categories'),
-  create: (body: { name: string; description?: string; color?: string }) =>
-    request<Category>('/api/categories', { method: 'POST', body: JSON.stringify(body) }),
-  get: (id: number) => request<Category>(`/api/categories/${id}`),
-  update: (id: number, body: { name?: string; description?: string; color?: string }) =>
-    request<Category>(`/api/categories/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
-  remove: (id: number) => request<void>(`/api/categories/${id}`, { method: 'DELETE' }),
-  listInstruments: (id: number) =>
-    request<CategoryInstrument[]>(`/api/categories/${id}/instruments`),
-  addInstrument: (id: number, instrument_id: number, weight?: number) =>
-    request<{ instrument_id: number; category_id: number; weight: number }>(
-      `/api/categories/${id}/instruments`,
-      { method: 'POST', body: JSON.stringify({ instrument_id, weight: weight ?? 1 }) },
-    ),
-  removeInstrument: (id: number, instr_id: number) =>
-    request<void>(`/api/categories/${id}/instruments/${instr_id}`, { method: 'DELETE' }),
-};
-
 // --- Allocations ---
 
-export type AllocCategory = 'EQUITY' | 'GOLD' | 'DEBT' | 'US_EQUITY' | 'OTHERS';
+export type AllocCategory = 'EQUITY' | 'METALS' | 'DEBT' | 'US_EQUITY' | 'OTHERS';
+
+export type RebalanceAction = 'SELL' | 'BUY' | 'HOLD' | '';
 
 export interface InstrumentAllocation {
   instrument_id: number;
   instrument_name: string;
+  asset_type: string;
+  currency: string;
   alloc_category: AllocCategory;
+  current_units: number;
+  current_price: number;
   current_value: number;
   current_percent: number;
   target_percent: number;
   deviation: number;
+  unitized: boolean;
+  has_target: boolean;
+  rebalance_amount: number; // +ve => sell/trim ₹, -ve => buy/add ₹
+  rebalance_units: number; // +ve => sell, -ve => buy (unitized only)
+  rebalance_action: RebalanceAction;
   sip_amount: number;
   current_sip_percent: number;
   sip_target_percent: number;
   sip_deviation: number;
-  updated_at: string;
+  updated_at: string | null;
 }
 
 export interface CategoryAllocation {
@@ -580,6 +552,8 @@ export interface CategoryAllocation {
   current_value: number;
   current_percent: number;
   deviation: number;
+  rebalance_amount: number; // +ve => trim ₹, -ve => add ₹
+  rebalance_action: RebalanceAction;
   updated_at: string;
 }
 
@@ -596,6 +570,36 @@ export interface DistributionItem {
   alloc_category: AllocCategory;
   target_percent: number;
   amount: number;
+}
+
+export type TrendTag = 'UPTREND' | 'DOWNTREND' | 'NEUTRAL';
+
+export interface AllocCategorySuggestion {
+  alloc_category: AllocCategory;
+  current_percent: number;
+  suggested_target_percent: number;
+  trend: TrendTag;
+  reason: string;
+}
+
+export interface AllocInstrumentSuggestion {
+  instrument_id: number;
+  instrument_name: string;
+  alloc_category: AllocCategory;
+  current_percent: number;
+  suggested_target_percent: number;
+  trend: TrendTag;
+  momentum_score: number;
+  reason: string;
+}
+
+export interface AllocSuggestResult {
+  risk_profile: string;
+  generated_at: string;
+  market_context: string;
+  rationale: string;
+  category_suggestions: AllocCategorySuggestion[];
+  instrument_suggestions: AllocInstrumentSuggestion[];
 }
 
 export const allocationsApi = {
@@ -626,6 +630,25 @@ export const allocationsApi = {
       '/api/allocations/calculate-distribution',
       { method: 'POST', body: JSON.stringify({ amount }) },
     ),
+  seedFromHoldings: () =>
+    request<{ seeded: number }>('/api/allocations/seed-from-holdings', { method: 'POST' }),
+  aiSuggest: (body: { risk_profile: string; horizon?: string }) =>
+    request<AllocSuggestResult>('/api/allocations/ai-suggest', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  applyTargets: (body: {
+    category_targets: { alloc_category: AllocCategory; target_percent: number }[];
+    instrument_targets: {
+      instrument_id: number;
+      target_percent: number;
+      alloc_category: AllocCategory;
+    }[];
+  }) =>
+    request<{ applied: number }>('/api/allocations/apply-targets', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 // --- Market Mood ---

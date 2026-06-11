@@ -153,6 +153,7 @@ All file paths are relative to the repository root
 - **JSON enforcement:** OpenAI uses `response_format: {type: json_object}` (line 722); Antigravity uses `responseMimeType: application/json` (line 766); Anthropic relies on prompt instruction.
 - **Streaming format:** All three normalised to SSE `data: {"text": "..."}\n\n` chunks via `writeChunk` (line 1130) terminated with `data: [DONE]\n\n`. The Antigravity scanner buffer is increased to 1 MB for large frames (line 1093).
 - **Deterministic actions:** Actions (`BUY_MORE | HOLD | SWITCH | BOOK_PROFIT`) are computed in Go from the score (`scoreToAction`, line 630); AI is only allowed to write the prose. Action is overwritten server-side after the LLM responds (line 615-620).
+- **AI allocation targets** (`allocation_ai.go`, `SuggestAllocations`): reuses `callProviderJSON`. The editable system prompt is `ai_prompts.allocation_suggest` (seeded by `00029_allocation_prompt.sql`; built-in `defaultAllocPrompt` fallback if the row is blank), with `{{risk_profile}}`/`{{horizon}}`/`{{bands}}` placeholders filled from `riskBands`. Grounding facts (trailing returns, cached `zero1_score`/`relative_rank`/`category_bearish`, market mood) are computed in Go so the model only proposes percentages; results are clamped + renormalized server-side (category sum 100; instruments sum to their category). The `allocation_suggest` prompt is editable in **Settings → AI Prompts** alongside `signals_*`/`holdings_*`/`stock_*`.
 
 ---
 

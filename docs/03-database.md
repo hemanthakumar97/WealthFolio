@@ -84,7 +84,7 @@ Each file uses goose annotations:
 | 002 | `00002_transactions.sql`                   | Create `instruments`, `upload_history`, `transactions`, `import_logs`. Includes the dedup index `idx_transactions_dedup` on `(instrument_id, transaction_date, transaction_type, platform)`. |
 | 003 | `00003_prices.sql`                         | Create `prices` hypertable (30-day chunks, compression after 90d, segment by `instrument_id`) and the `market_cache` key-value store. |
 | 004 | `00004_snapshots.sql`                      | Create `portfolio_snapshots` hypertable (90-day chunks, compression after 180d) plus the `cagg_monthly_returns` continuous aggregate. |
-| 005 | `00005_categories.sql`                     | Create `categories`, `instrument_categories`, `instrument_allocations`, `category_allocations`. Seeds the five canonical alloc categories (EQUITY, GOLD, DEBT, US_EQUITY, OTHERS). |
+| 005 | `00005_categories.sql`                     | Create `categories`, `instrument_categories`, `instrument_allocations`, `category_allocations`. Seeds the five canonical alloc categories (EQUITY, GOLD→METALS in `00030`, DEBT, US_EQUITY, OTHERS). |
 | 006 | `00006_market_mood.sql`                    | Create `market_data` hypertable + `cagg_index_pe_stats` CAGG + `market_index_config` (seeded with 5 Indian indices) + `watchlist` table. |
 | 007 | `00007_trade_id.sql`                       | Add `trade_id` column to `transactions` + partial unique index `(instrument_id, trade_id, transaction_type) WHERE trade_id IS NOT NULL` for stricter dedup. |
 | 008 | `00008_yahoo_symbol.sql`                   | Add `instruments.yahoo_symbol` for US fund price fetching via Yahoo.    |
@@ -103,6 +103,11 @@ Each file uses goose annotations:
 | 021 | `00021_instrument_scores.sql`              | Create `instrument_scores` table — per-instrument 0–1 score + metrics JSON. |
 | 022 | `00022_signal_rich_output.sql`             | Add `signal_results.key_points` and `signal_results.qualitative_note` columns. |
 | 023 | `00023_fix_usfund_currency.sql`            | Data fix: set `currency='USD'` for any `US_FUND` instrument still incorrectly tagged INR. |
+| 029 | `00029_allocation_prompt.sql`              | Seed the `allocation_suggest` row in `ai_prompts` (editable system prompt for `SignalService.SuggestAllocations`). `ON CONFLICT DO NOTHING`; code falls back to a built-in default if absent. |
+| 030 | `00030_rename_gold_to_metals.sql`          | Rename alloc_category `GOLD` → `METALS` (holds gold + silver): drop/recreate CHECK constraints on `instrument_allocations` + `category_allocations`, migrate rows, and `replace()` GOLD→METALS in the `allocation_suggest` prompt. |
+| 031 | `00031_drop_categories.sql`                | Drop the unused `categories` + `instrument_categories` tables (the `/categories` feature was removed; classification moved to `instrument_allocations.alloc_category`, editable on the Allocations page). |
+
+> Note: the IDs in this table predate a renumbering; the on-disk files run `00001`–`00016` then `00024`–`00029`. Always use the next sequential on-disk number for new migrations.
 
 To add a new migration, drop a file `internal/db/migrations/NNNNN_name.sql` with the next sequential number — `go:embed` will pick it up at compile time and goose will apply it at next startup.
 
@@ -236,11 +241,11 @@ Generic JSONB key-value cache with TTL. PK `cache_key`. Stores scraped MMI, prec
 ### `watchlist` — `00006_market_mood.sql`
 User-saved symbols (free-form text — **no FK to `instruments`**, by design, so you can watch stocks you haven't bought). Columns: `id`, `symbol UNIQUE`, `created_at`.
 
-### `categories` / `instrument_categories` — `00005_categories.sql`
-Many-to-many tagging. `categories(id, name UNIQUE, description, color)`. Junction `instrument_categories(instrument_id, category_id, weight NUMERIC(5,4) DEFAULT 1.0)` with `UNIQUE(instrument_id, category_id)`. Weight allows fractional bucketing (e.g. a hybrid fund 60% to EQUITY, 40% to DEBT).
+### `categories` / `instrument_categories` — **dropped in `00031`**
+Formerly a many-to-many tagging feature (created in `00005`). Both tables were empty and unreferenced once the `/categories` endpoints + page were removed; dropped in `00031_drop_categories.sql`. Instrument classification now lives solely in `instrument_allocations.alloc_category` (editable on the Allocations page).
 
 ### `instrument_allocations` — `00005_categories.sql`
-Per-instrument target allocation + SIP plan. UNIQUE on `instrument_id`. Columns: `target_percent`, `sip_amount`, `sip_target_percent`, `alloc_category` (CHECK ∈ EQUITY/GOLD/DEBT/US_EQUITY/OTHERS).
+Per-instrument target allocation + SIP plan. UNIQUE on `instrument_id`. Columns: `target_percent`, `sip_amount`, `sip_target_percent`, `alloc_category` (CHECK ∈ EQUITY/METALS/DEBT/US_EQUITY/OTHERS — `GOLD` renamed to `METALS` in `00030`).
 
 ### `category_allocations` — `00005_categories.sql`
 Top-level asset-class targets. PK on `alloc_category` (the same 5-value enum). Seeded with all 5 rows at migration time so the UI never has to handle missing categories.

@@ -51,7 +51,6 @@ Routes live under `web/src/routes/`. The plugin generates `web/src/routeTree.gen
 | `_app.signal.tsx` | `/signal` | gated |
 | `_app.closed-positions.tsx` | `/closed-positions` | gated |
 | `_app.backfill.tsx` | `/backfill` | gated |
-| `_app.categories.tsx` | `/categories` | gated |
 | `_app.settings.tsx` | `/settings` | gated |
 
 The `_app` prefix is a **pathless layout route**: `_app.dashboard.tsx` resolves to `/dashboard` (not `/_app/dashboard`) but inherits `_app.tsx`'s component and `beforeLoad`.
@@ -124,8 +123,7 @@ async function request<T>(path, init): Promise<T> {
 | `trendsApi` (227) | `portfolio({days, asset_type, instrument_id})`, `monthlyReturns(months)`, `allocationHistory(days)`, `benchmark(symbol)`, `backfill()` | |
 | `signalApi` (372) | `loadHoldings(risk)`, `generateHoldings({risk_profile, goal, horizon})`, `getInstrumentMetrics(id)`, `refreshScores()`, `getMFMetrics(id)` | AI-driven |
 | `aiSettingsApi` (395) | `get`, `put({provider, api_key, model})` | |
-| `categoriesApi` (439) | `list`, `create`, `get`, `update`, `remove`, `listInstruments`, `addInstrument`, `removeInstrument` | |
-| `allocationsApi` (503) | `overview`, `updateInstrument`, `updateCategory`, `calculateDistribution(amount)` | |
+| `allocationsApi` (503) | `overview`, `updateInstrument`, `updateCategory`, `calculateDistribution(amount)`, `seedFromHoldings()`, `aiSuggest({risk_profile, horizon?})`, `applyTargets({category_targets, instrument_targets})` | |
 | `marketApi` (615) | `config`, `toggleConfig`, `moods`, `indexHistory(name, period?)`, `mmi`, `metals`, `refresh`, `sync`, `ingestPE`, `watchlist`, `addWatchlist`, `removeWatchlist` | |
 | `backfillApi` (689) | `status`, `startFromSheet`, `startFromFile`, `autoSearch`, `startAuto`, `searchMFAPI`, `startFromMFAPI`, `updateAMFICode`, `updateGFinanceSymbol` | |
 | `settingsApi` (762) | `gmailStatus`, `gmailDisconnect`, `saveGmailConfig`, `listRules`, `testRun`, `createRule`, `toggleRule`, `deleteRule` | Email-watch admin |
@@ -192,9 +190,12 @@ All gated routes follow the pattern: `createFileRoute('/_app/<slug>')({ componen
 - **UI:** Tabs `upload` / `manual` / `history`. Upload tab supports CSV/XLSX with optional `platform` override. Manual tab uses `react-hook-form` + `zodResolver`. History tab renders status badges and expandable error logs.
 
 ### `/allocations` — `_app.allocations.tsx`
-- **Query:** `allocationsApi.overview()` → `AllocationOverview` with `instrument_allocations` and `category_allocations`
-- **Mutations:** `updateInstrument`, `updateCategory` (inline editable target % and SIP amount), `calculateDistribution(amount)` for SIP planning
-- **UI:** Tabs split between Category view (5 alloc categories: EQUITY / GOLD / DEBT / US_EQUITY / OTHERS) and Instrument view, Recharts `PieChart` for current vs target, deviation badges, copy-to-clipboard distribution result
+- **Query:** `allocationsApi.overview()` → `AllocationOverview`. Overview is **holdings-driven** — every instrument with net units > 0 appears (auto-classified by asset type), so the page is never empty even before targets are set.
+- **Mutations:** `updateInstrument`, `updateCategory` (inline editable target % and SIP amount), `calculateDistribution(amount)` for lump-sum planning, `seedFromHoldings()` — the **"Populate from holdings"** button (header) seeds blank targets/categories from the current mix — and `aiSuggest()` / `applyTargets()` for the AI flow below.
+- **AI Suggest targets** (`Brain` button, header → `AISuggestPanel`): pick a risk profile (conservative/moderate/aggressive) → `aiSuggest({risk_profile})` calls the trend-tilt AI (Signal-page-style loading spinner). The panel renders `market_context` + `rationale`, a **category targets** table and **instrument targets grouped by category**, each row showing `TargetShift` (current → suggested with delta) + a `TrendChip` (Uptrend/Downtrend/Neutral) and an editable `PctInput`. **"Apply all targets"** → `applyTargets()` (bulk) → invalidate `['allocations']`. Nothing is saved until applied; the Distribution Calculator then splits by the AI-tilted targets.
+- **Rebalance column** (kept alongside the Deviation column): `InstrumentRebalanceCell` shows a concrete action from `rebalance_action`/`rebalance_amount`/`rebalance_units` — unit-traded assets (ETF/Stock/Gold, `unitized=true`) render **"Sell/Buy N units (≈₹X)"** (floor for sell, ceil for buy); MF/US funds render **"Redeem/Invest ₹X"**. `HOLD` → "On target"; no plan row → "set target". `CategoryRebalanceCell` shows **"Trim/Add ₹X"** per category. KPI strip includes a **To Rebalance** roll-up (total sell ₹ vs buy ₹).
+- **Editable category:** in the Instrument view the category cell is a `CategorySelect` (colored chip dropdown) — changing it calls `updateInstrument({alloc_category})` and re-buckets the instrument. (Replaces the former standalone `/categories` page, now removed.)
+- **UI:** Tabs split between Category view (5 alloc categories: EQUITY / METALS / DEBT / US_EQUITY / OTHERS) and Instrument view, Recharts `PieChart` for current vs target, deviation badges, rebalance pills, copy-to-clipboard distribution result.
 
 ### `/trends` — `_app.trends.tsx`
 - **Queries:** `trendsApi.portfolio({days, asset_type, instrument_id})`, `trendsApi.monthlyReturns(months)`, `trendsApi.allocationHistory(days)`, `trendsApi.benchmark(symbol)`, `instrumentsApi.list()`
@@ -221,11 +222,6 @@ All gated routes follow the pattern: `createFileRoute('/_app/<slug>')({ componen
 - **Mutations:** `backfillApi.startFromSheet`, `backfillApi.startFromFile`, `backfillApi.startAuto`, `backfillApi.autoSearch`, `backfillApi.searchMFAPI`, `backfillApi.updateAMFICode`, `backfillApi.updateGFinanceSymbol`
 - **SSE:** subscribes to `backfill` events via `useSSE()` for live progress and log tail
 - **Components in-file:** `AutoPicker` (30+) — MFAPI search for MF, Yahoo Finance search for ETF/STOCK
-
-### `/categories` — `_app.categories.tsx`
-- **Queries:** `categoriesApi.list()`, `categoriesApi.listInstruments(id)`, `instrumentsApi.list()`
-- **Mutations:** `create`, `update`, `remove`, `addInstrument`, `removeInstrument`
-- **UI:** Color-tagged category cards with preset palette (`PRESET_COLORS` at 29+), inline edit, expandable instrument list, weighted membership
 
 ### `/settings` — `_app.settings.tsx`
 - **Queries:** `authApi.me()`, `aiSettingsApi.get()`, `settingsApi.gmailStatus()`, `settingsApi.listRules()`

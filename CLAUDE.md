@@ -80,6 +80,7 @@ InstrumentService + DuplicateDetector → ImportService
 FXService → PriceFetcher, PortfolioCalculator, SnapshotService, PreciousMetalsService
 PortfolioCalculator → SnapshotService
 MarketMoodService / TickertapeService / SignalService  (pool only)
+SignalService → AllocationsHandler  (AI allocation target suggestions: /allocations/ai-suggest)
 Gmail watcher always starts — skips if no credentials in app_settings
 ```
 

@@ -56,7 +56,7 @@ const (
 // Allocation categories — must match the CHECK constraint on instrument_allocations and category_allocations.
 const (
 	AllocEquity   = "EQUITY"
-	AllocGold     = "GOLD"
+	AllocMetals   = "METALS"
 	AllocDebt     = "DEBT"
 	AllocUSEquity = "US_EQUITY"
 	AllocOthers   = "OTHERS"

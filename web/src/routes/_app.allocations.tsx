@@ -14,7 +14,12 @@ import {
   TrendingUp,
   Sliders,
   ArrowUpRight,
+  ArrowDownRight,
   Filter,
+  Sparkles,
+  Scale,
+  Minus,
+  Brain,
 } from 'lucide-react';
 
 import {
@@ -22,6 +27,9 @@ import {
   type InstrumentAllocation,
   type CategoryAllocation,
   type AllocCategory,
+  type RebalanceAction,
+  type AllocSuggestResult,
+  type TrendTag,
 } from '@/lib/api';
 import { formatINR as formatCurrency } from '@/lib/format';
 import { Button } from '@/components/ui/button';
@@ -45,7 +53,7 @@ export const Route = createFileRoute('/_app/allocations')({
 
 const ALLOC_COLORS: Record<AllocCategory, string> = {
   EQUITY: '#6366f1',
-  GOLD: '#f59e0b',
+  METALS: '#f59e0b',
   DEBT: '#14b8a6',
   US_EQUITY: '#3b82f6',
   OTHERS: '#94a3b8',
@@ -53,7 +61,7 @@ const ALLOC_COLORS: Record<AllocCategory, string> = {
 
 const ALLOC_LABELS: Record<AllocCategory, string> = {
   EQUITY: 'Equity',
-  GOLD: 'Gold',
+  METALS: 'Metals',
   DEBT: 'Debt',
   US_EQUITY: 'US Equity',
   OTHERS: 'Others',
@@ -79,6 +87,143 @@ function DeviationBadge({ value }: { value: number }) {
       {pos ? '+' : ''}
       {value.toFixed(2)}%
     </span>
+  );
+}
+
+// --- Rebalance suggestion cells ---
+function NoTargetHint({ label = 'set target' }: { label?: string }) {
+  return (
+    <span className="text-[11px] font-medium italic text-muted-foreground/45">— {label} —</span>
+  );
+}
+
+function OnTargetBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-border/40 bg-muted/30 px-2.5 py-0.5 text-[11px] font-semibold text-muted-foreground/80">
+      <Check className="size-3 text-emerald-500" />
+      On target
+    </span>
+  );
+}
+
+function RebalancePill({
+  action,
+  label,
+  sub,
+}: {
+  action: Extract<RebalanceAction, 'SELL' | 'BUY'>;
+  label: React.ReactNode;
+  sub?: React.ReactNode;
+}) {
+  const sell = action === 'SELL';
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <span
+        className={cn(
+          'inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-bold tabular-nums',
+          sell
+            ? 'border-rose-500/25 bg-rose-500/10 text-rose-600 dark:text-rose-400'
+            : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+        )}
+      >
+        {sell ? <ArrowDownRight className="size-3" /> : <ArrowUpRight className="size-3" />}
+        {label}
+      </span>
+      {sub && <span className="text-[10px] tabular-nums text-muted-foreground/70">{sub}</span>}
+    </div>
+  );
+}
+
+function InstrumentRebalanceCell({ ia }: { ia: InstrumentAllocation }) {
+  if (!ia.has_target) return <NoTargetHint />;
+  if (ia.rebalance_action === 'HOLD' || ia.rebalance_action === '') return <OnTargetBadge />;
+
+  const sell = ia.rebalance_action === 'SELL';
+  const amt = Math.abs(ia.rebalance_amount);
+
+  // Unit-traded assets (ETF / Stock / Gold ETF): suggest whole units.
+  // Floor when selling (don't oversell), ceil when buying (cover the gap).
+  if (ia.unitized) {
+    const rawUnits = Math.abs(ia.rebalance_units);
+    const units = sell ? Math.floor(rawUnits) : Math.ceil(rawUnits);
+    if (units < 1) {
+      return <span className="text-[11px] text-muted-foreground/70">within 1 unit</span>;
+    }
+    return (
+      <RebalancePill
+        action={ia.rebalance_action}
+        label={`${sell ? 'Sell' : 'Buy'} ${units} unit${units === 1 ? '' : 's'}`}
+        sub={
+          <>
+            ≈ <MaskedAmount value={amt} format={formatCurrency} />
+          </>
+        }
+      />
+    );
+  }
+
+  // Amount-based assets (MF / US funds): suggest a rupee amount.
+  return (
+    <RebalancePill
+      action={ia.rebalance_action}
+      label={
+        <>
+          {sell ? 'Redeem ' : 'Invest '}
+          <MaskedAmount value={amt} format={formatCurrency} />
+        </>
+      }
+    />
+  );
+}
+
+function CategoryRebalanceCell({ ca }: { ca: CategoryAllocation }) {
+  if (ca.rebalance_action === '') return <NoTargetHint />;
+  if (ca.rebalance_action === 'HOLD') return <OnTargetBadge />;
+  const sell = ca.rebalance_action === 'SELL';
+  const amt = Math.abs(ca.rebalance_amount);
+  return (
+    <RebalancePill
+      action={ca.rebalance_action}
+      label={
+        <>
+          {sell ? 'Trim ' : 'Add '}
+          <MaskedAmount value={amt} format={formatCurrency} />
+        </>
+      }
+    />
+  );
+}
+
+const ALLOC_CATEGORIES: AllocCategory[] = ['EQUITY', 'METALS', 'DEBT', 'US_EQUITY', 'OTHERS'];
+
+// --- Editable allocation-category chip ---
+function CategorySelect({
+  value,
+  onChange,
+}: {
+  value: AllocCategory;
+  onChange: (v: AllocCategory) => void;
+}) {
+  const color = ALLOC_COLORS[value];
+  return (
+    <Select value={value} onValueChange={(v) => onChange(v as AllocCategory)}>
+      <SelectTrigger
+        className="h-7 w-[124px] gap-1 rounded-full border px-2.5 py-0.5 text-[10px] font-bold tracking-wide shadow-none focus:ring-1 focus:ring-violet-500/20"
+        style={{ borderColor: color + '40', color, backgroundColor: color + '0d' }}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent className="rounded-xl border-border/60 bg-card/95 backdrop-blur-md">
+        {ALLOC_CATEGORIES.map((c) => (
+          <SelectItem key={c} value={c} className="text-xs font-medium">
+            <span className="flex items-center gap-2">
+              <span className="size-2 rounded-full" style={{ backgroundColor: ALLOC_COLORS[c] }} />
+              {ALLOC_LABELS[c]}
+            </span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -322,6 +467,9 @@ function CategoryView({ data }: { data: CategoryAllocation[] }) {
                     <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
                       Deviation
                     </th>
+                    <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Rebalance
+                    </th>
                     <th className="px-5 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
                       SIP Target%
                     </th>
@@ -363,6 +511,9 @@ function CategoryView({ data }: { data: CategoryAllocation[] }) {
                       </td>
                       <td className="px-4 py-3.5 text-right">
                         <DeviationBadge value={ca.deviation} />
+                      </td>
+                      <td className="px-4 py-3.5 text-right">
+                        <CategoryRebalanceCell ca={ca} />
                       </td>
                       <td className="px-5 py-3.5 text-right">
                         <EditableCell
@@ -432,7 +583,7 @@ function InstrumentView({
                   <SelectItem value="ALL" className="text-xs font-medium">
                     All Categories
                   </SelectItem>
-                  {(['EQUITY', 'GOLD', 'DEBT', 'US_EQUITY', 'OTHERS'] as AllocCategory[]).map(
+                  {(['EQUITY', 'METALS', 'DEBT', 'US_EQUITY', 'OTHERS'] as AllocCategory[]).map(
                     (c) => (
                       <SelectItem key={c} value={c} className="text-xs font-medium">
                         {ALLOC_LABELS[c]}
@@ -473,6 +624,9 @@ function InstrumentView({
                   <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
                     Deviation
                   </th>
+                  <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                    Rebalance
+                  </th>
                   <th className="px-5 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
                     SIP Allocation
                   </th>
@@ -481,7 +635,7 @@ function InstrumentView({
               <tbody className="divide-y divide-border/40">
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-16 text-center text-muted-foreground">
+                    <td colSpan={8} className="px-4 py-16 text-center text-muted-foreground">
                       <div className="mx-auto flex max-w-sm flex-col items-center justify-center text-muted-foreground/80">
                         <div className="mb-3 rounded-full border border-border/40 bg-muted/30 p-4">
                           <Wallet className="size-8 stroke-[1.5] text-muted-foreground/60" />
@@ -501,21 +655,23 @@ function InstrumentView({
                       key={ia.instrument_id}
                       className="group transition-colors duration-150 hover:bg-muted/30"
                     >
-                      <td className="px-5 py-3.5 font-semibold text-foreground">
-                        {ia.instrument_name}
+                      <td className="px-5 py-3.5">
+                        <div className="font-semibold text-foreground">{ia.instrument_name}</div>
+                        <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/55">
+                          {ia.asset_type.replace('_', ' ')} ·{' '}
+                          {ia.unitized ? 'units' : 'amount'}
+                        </div>
                       </td>
                       <td className="px-4 py-3.5">
-                        <Badge
-                          variant="outline"
-                          className="rounded-full border bg-transparent px-2.5 py-0.5 text-[10px] font-bold tracking-wide"
-                          style={{
-                            borderColor: ALLOC_COLORS[ia.alloc_category] + '30',
-                            color: ALLOC_COLORS[ia.alloc_category],
-                            backgroundColor: ALLOC_COLORS[ia.alloc_category] + '0d',
-                          }}
-                        >
-                          {ALLOC_LABELS[ia.alloc_category]}
-                        </Badge>
+                        <CategorySelect
+                          value={ia.alloc_category}
+                          onChange={(v) =>
+                            updateMut.mutate({
+                              id: ia.instrument_id,
+                              body: { alloc_category: v },
+                            })
+                          }
+                        />
                       </td>
                       <td className="px-4 py-3.5 text-right font-semibold tabular-nums text-foreground/80">
                         <MaskedAmount value={ia.current_value} format={formatCurrency} />
@@ -537,6 +693,9 @@ function InstrumentView({
                       <td className="px-4 py-3.5 text-right">
                         <DeviationBadge value={ia.deviation} />
                       </td>
+                      <td className="px-4 py-3.5 text-right">
+                        <InstrumentRebalanceCell ia={ia} />
+                      </td>
                       <td className="px-5 py-3.5 text-right">
                         <EditableCell
                           value={ia.sip_amount}
@@ -551,6 +710,17 @@ function InstrumentView({
                 )}
               </tbody>
             </table>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-border/40 bg-muted/10 p-4 text-[11px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5">
+              <ArrowDownRight className="size-3 text-rose-500" /> Sell / Redeem when overweight
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <ArrowUpRight className="size-3 text-emerald-500" /> Buy / Invest when underweight
+            </span>
+            <span className="text-muted-foreground/70">
+              ETF, stock &amp; gold suggestions are in units; mutual funds &amp; US funds in ₹.
+            </span>
           </div>
         </CardContent>
       </Card>
@@ -600,8 +770,9 @@ function DistributionCalculator() {
               Investment Distribution Calculator
             </h3>
             <p className="text-xs leading-relaxed text-muted-foreground">
-              Enter a lump-sum amount to instantly calculate the mathematically optimal distribution
-              matching your target allocations.
+              Enter a lump-sum amount to instantly split it by your target allocations. Use{' '}
+              <span className="font-semibold text-violet-500">AI Suggest targets</span> first to make
+              this distribution trend-aware.
             </p>
           </div>
         </div>
@@ -783,6 +954,335 @@ function DistributionCalculator() {
   );
 }
 
+// --- AI Trend Suggestions ---
+const RISK_PROFILES = [
+  { id: 'conservative', label: 'Conservative' },
+  { id: 'moderate', label: 'Moderate' },
+  { id: 'aggressive', label: 'Aggressive' },
+] as const;
+
+function TrendChip({ trend }: { trend: TrendTag }) {
+  if (trend === 'UPTREND')
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+        <ArrowUpRight className="size-3" /> Uptrend
+      </span>
+    );
+  if (trend === 'DOWNTREND')
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-rose-500/25 bg-rose-500/10 px-2 py-0.5 text-[10px] font-bold text-rose-600 dark:text-rose-400">
+        <ArrowDownRight className="size-3" /> Downtrend
+      </span>
+    );
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-border/40 bg-muted/30 px-2 py-0.5 text-[10px] font-bold text-muted-foreground/80">
+      <Minus className="size-3" /> Neutral
+    </span>
+  );
+}
+
+// current → suggested with delta coloring
+function TargetShift({ current, suggested }: { current: number; suggested: number }) {
+  const delta = suggested - current;
+  const color =
+    Math.abs(delta) < 0.05
+      ? 'text-muted-foreground'
+      : delta > 0
+        ? 'text-emerald-600 dark:text-emerald-400'
+        : 'text-rose-600 dark:text-rose-400';
+  return (
+    <span className="inline-flex items-center gap-1 tabular-nums">
+      <span className="text-muted-foreground/70">{current.toFixed(1)}%</span>
+      <ArrowUpRight className="size-3 rotate-45 text-muted-foreground/40" />
+      <span className={cn('font-bold', color)}>{suggested.toFixed(1)}%</span>
+      {Math.abs(delta) >= 0.05 && (
+        <span className={cn('text-[10px] font-semibold', color)}>
+          ({delta > 0 ? '+' : ''}
+          {delta.toFixed(1)})
+        </span>
+      )}
+    </span>
+  );
+}
+
+function PctInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-lg border border-border/60 bg-muted/40 px-1.5 py-0.5">
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-6 w-14 border-0 bg-transparent px-1 py-0 text-right text-xs font-bold tabular-nums focus-visible:ring-0 focus-visible:ring-offset-0"
+      />
+      <span className="text-[10px] font-semibold text-muted-foreground">%</span>
+    </span>
+  );
+}
+
+function AISuggestPanel({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const [risk, setRisk] = useState<string>('moderate');
+  const [catEdit, setCatEdit] = useState<Record<string, string>>({});
+  const [instrEdit, setInstrEdit] = useState<Record<number, string>>({});
+
+  const suggestMut = useMutation({
+    mutationFn: () => allocationsApi.aiSuggest({ risk_profile: risk }),
+    onMutate: () => {
+      setCatEdit({});
+      setInstrEdit({});
+    },
+  });
+
+  const applyMut = useMutation({
+    mutationFn: (data: AllocSuggestResult) =>
+      allocationsApi.applyTargets({
+        category_targets: data.category_suggestions.map((c) => ({
+          alloc_category: c.alloc_category,
+          target_percent: Number(catEdit[c.alloc_category] ?? c.suggested_target_percent),
+        })),
+        instrument_targets: data.instrument_suggestions.map((i) => ({
+          instrument_id: i.instrument_id,
+          target_percent: Number(instrEdit[i.instrument_id] ?? i.suggested_target_percent),
+          alloc_category: i.alloc_category,
+        })),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['allocations'] });
+      onClose();
+    },
+  });
+
+  const data = suggestMut.data;
+  const instrumentsByCat = data
+    ? data.instrument_suggestions.reduce(
+        (acc, it) => {
+          (acc[it.alloc_category] ||= []).push(it);
+          return acc;
+        },
+        {} as Record<AllocCategory, AllocSuggestResult['instrument_suggestions']>,
+      )
+    : null;
+
+  return (
+    <Card className="overflow-hidden rounded-2xl border border-violet-500/25 bg-card/55 shadow-sm backdrop-blur-sm">
+      {/* Panel header */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/40 bg-gradient-to-r from-violet-500/10 to-indigo-500/5 p-5">
+        <div className="flex items-center gap-3">
+          <div className="rounded-xl border border-violet-500/20 bg-violet-500/10 p-2.5 text-violet-500 shadow-inner">
+            <Brain className="size-5 stroke-[1.5]" />
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-foreground">AI Trend-Based Targets</h3>
+            <p className="text-xs text-muted-foreground">
+              Tilts your targets toward what's trending up, within your risk bands. Review & edit
+              before applying.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Select value={risk} onValueChange={setRisk}>
+            <SelectTrigger className="h-9 w-36 rounded-xl border-border/60 bg-card/60 text-xs font-semibold">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="rounded-xl">
+              {RISK_PROFILES.map((p) => (
+                <SelectItem key={p.id} value={p.id} className="text-xs font-medium">
+                  {p.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            onClick={() => suggestMut.mutate()}
+            disabled={suggestMut.isPending}
+            className="h-9 gap-2 rounded-xl border-0 bg-gradient-to-r from-violet-600 to-indigo-600 px-4 text-xs font-bold text-white shadow-sm hover:from-violet-500 hover:to-indigo-500"
+          >
+            {suggestMut.isPending ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="size-3.5" />
+            )}
+            {data ? 'Regenerate' : 'Generate'}
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={onClose}
+            className="size-9 rounded-xl text-muted-foreground hover:bg-muted/40"
+          >
+            <X className="size-4" />
+          </Button>
+        </div>
+      </div>
+
+      {/* Panel body */}
+      <div className="p-5">
+        {suggestMut.isPending && (
+          <div className="flex flex-col items-center justify-center gap-3 py-12 text-muted-foreground">
+            <Loader2 className="size-7 animate-spin text-violet-500" />
+            <p className="text-sm font-semibold text-foreground">Analysing your portfolio trends…</p>
+            <p className="text-xs">Reading momentum, returns and market mood — this can take a few seconds.</p>
+          </div>
+        )}
+
+        {suggestMut.isError && (
+          <div className="rounded-xl border border-rose-500/25 bg-rose-500/5 p-4 text-sm font-semibold text-rose-500">
+            {(suggestMut.error as Error).message}
+          </div>
+        )}
+
+        {!suggestMut.isPending && !data && !suggestMut.isError && (
+          <div className="flex flex-col items-center justify-center gap-2 py-10 text-center text-muted-foreground">
+            <Sparkles className="size-7 text-violet-500/70" />
+            <p className="text-sm font-semibold text-foreground">Pick a risk profile and hit Generate</p>
+            <p className="max-w-md text-xs leading-relaxed">
+              The AI reads each holding's trend, quality score and recent returns, then proposes
+              category &amp; fund target %s you can review and apply.
+            </p>
+          </div>
+        )}
+
+        {data && (
+          <div className="space-y-5">
+            {/* Narrative */}
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-xl border border-border/50 bg-muted/10 p-4">
+                <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">
+                  Market Read
+                </p>
+                <p className="text-xs leading-relaxed text-foreground/90">{data.market_context}</p>
+              </div>
+              <div className="rounded-xl border border-border/50 bg-muted/10 p-4">
+                <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">
+                  Strategy
+                </p>
+                <p className="text-xs leading-relaxed text-foreground/90">{data.rationale}</p>
+              </div>
+            </div>
+
+            {/* Category suggestions */}
+            <div className="overflow-hidden rounded-xl border border-border/50">
+              <div className="border-b border-border/40 bg-muted/20 px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground/90">
+                Category Targets
+              </div>
+              <table className="w-full text-sm">
+                <tbody className="divide-y divide-border/40">
+                  {data.category_suggestions.map((c) => (
+                    <tr key={c.alloc_category} className="hover:bg-muted/20">
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="size-2.5 rounded-full"
+                            style={{ backgroundColor: ALLOC_COLORS[c.alloc_category] }}
+                          />
+                          <span className="font-semibold text-foreground">
+                            {ALLOC_LABELS[c.alloc_category]}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <TargetShift
+                          current={c.current_percent}
+                          suggested={Number(catEdit[c.alloc_category] ?? c.suggested_target_percent)}
+                        />
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <TrendChip trend={c.trend} />
+                      </td>
+                      <td className="px-4 py-2.5 text-right">
+                        <PctInput
+                          value={String(catEdit[c.alloc_category] ?? c.suggested_target_percent)}
+                          onChange={(v) =>
+                            setCatEdit((m) => ({ ...m, [c.alloc_category]: v }))
+                          }
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Instrument suggestions grouped by category */}
+            {instrumentsByCat &&
+              (Object.keys(instrumentsByCat) as AllocCategory[]).map((cat) => (
+                <div key={cat} className="overflow-hidden rounded-xl border border-border/50">
+                  <div className="flex items-center gap-2 border-b border-border/40 bg-muted/20 px-4 py-2.5">
+                    <span
+                      className="size-2.5 rounded-full"
+                      style={{ backgroundColor: ALLOC_COLORS[cat] }}
+                    />
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground/90">
+                      {ALLOC_LABELS[cat]} funds
+                    </span>
+                  </div>
+                  <table className="w-full text-sm">
+                    <tbody className="divide-y divide-border/40">
+                      {instrumentsByCat[cat].map((it) => (
+                        <tr key={it.instrument_id} className="align-top hover:bg-muted/20">
+                          <td className="px-4 py-2.5">
+                            <div className="font-semibold text-foreground">
+                              {it.instrument_name}
+                            </div>
+                            {it.reason && (
+                              <div className="mt-0.5 max-w-md text-[11px] leading-relaxed text-muted-foreground">
+                                {it.reason}
+                              </div>
+                            )}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-2.5">
+                            <TargetShift
+                              current={it.current_percent}
+                              suggested={Number(
+                                instrEdit[it.instrument_id] ?? it.suggested_target_percent,
+                              )}
+                            />
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <TrendChip trend={it.trend} />
+                          </td>
+                          <td className="px-4 py-2.5 text-right">
+                            <PctInput
+                              value={String(
+                                instrEdit[it.instrument_id] ?? it.suggested_target_percent,
+                              )}
+                              onChange={(v) =>
+                                setInstrEdit((m) => ({ ...m, [it.instrument_id]: v }))
+                              }
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+
+            {/* Apply bar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/50 bg-muted/10 p-4">
+              <p className="text-[11px] text-muted-foreground">
+                Applying overwrites your category &amp; instrument <strong>Target%</strong> with the
+                values above. Rebalance suggestions and the Distribution Calculator update instantly.
+              </p>
+              <Button
+                onClick={() => applyMut.mutate(data)}
+                disabled={applyMut.isPending}
+                className="h-9 gap-2 rounded-xl border-0 bg-gradient-to-r from-emerald-600 to-teal-600 px-5 text-xs font-bold text-white shadow-sm hover:from-emerald-500 hover:to-teal-500"
+              >
+                {applyMut.isPending ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Check className="size-3.5" />
+                )}
+                Apply all targets
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 // --- KPI Card ---
 function KpiCard({
   label,
@@ -856,6 +1356,7 @@ function KpiCard({
 // --- Page ---
 function AllocationsPage() {
   const [isMounted, setIsMounted] = useState(false);
+  const qc = useQueryClient();
 
   useEffect(() => {
     const timer = setTimeout(() => setIsMounted(true), 150);
@@ -865,6 +1366,13 @@ function AllocationsPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['allocations'],
     queryFn: allocationsApi.overview,
+  });
+
+  const [showAI, setShowAI] = useState(false);
+
+  const seedMut = useMutation({
+    mutationFn: allocationsApi.seedFromHoldings,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['allocations'] }),
   });
 
   if (isLoading || !isMounted) {
@@ -895,23 +1403,71 @@ function AllocationsPage() {
 
   const overview = data!;
 
+  // Rebalance roll-up across instruments that have a target.
+  const planned = overview.instrument_allocations.some((i) => i.has_target);
+  const toSell = overview.instrument_allocations
+    .filter((i) => i.rebalance_action === 'SELL')
+    .reduce((s, i) => s + Math.abs(i.rebalance_amount), 0);
+  const toBuy = overview.instrument_allocations
+    .filter((i) => i.rebalance_action === 'BUY')
+    .reduce((s, i) => s + Math.abs(i.rebalance_amount), 0);
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <header className="flex flex-col gap-1 md:max-w-3xl">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Asset Management
-        </p>
-        <h1 className="bg-gradient-to-r from-foreground to-foreground/75 bg-clip-text text-3xl font-extrabold tracking-tight text-transparent">
-          Allocations
-        </h1>
-        <p className="text-xs font-medium leading-relaxed text-muted-foreground/80">
-          Set customized target portfolios, distribute capital, and track SIP targets across assets.
-        </p>
+      <header className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+        <div className="flex flex-col gap-1 md:max-w-3xl">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Asset Management
+          </p>
+          <h1 className="bg-gradient-to-r from-foreground to-foreground/75 bg-clip-text text-3xl font-extrabold tracking-tight text-transparent">
+            Allocations
+          </h1>
+          <p className="text-xs font-medium leading-relaxed text-muted-foreground/80">
+            Track every holding against a target, and get exact sell/buy suggestions to rebalance.
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Button
+            onClick={() => setShowAI((v) => !v)}
+            className="h-10 gap-2 rounded-xl border-0 bg-gradient-to-r from-violet-600 to-indigo-600 px-4 text-xs font-bold text-white shadow-sm shadow-primary/20 transition-all hover:from-violet-500 hover:to-indigo-500"
+          >
+            <Brain className="size-3.5" />
+            AI Suggest targets
+          </Button>
+          <Button
+            onClick={() => seedMut.mutate()}
+            disabled={seedMut.isPending}
+            variant="outline"
+            className="h-10 gap-2 rounded-xl border-violet-500/30 bg-violet-500/5 px-4 text-xs font-bold text-violet-600 shadow-sm transition-all hover:bg-violet-500/10 dark:text-violet-400"
+          >
+            {seedMut.isPending ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="size-3.5" />
+            )}
+            {planned ? 'Fill missing targets' : 'Populate from holdings'}
+          </Button>
+        </div>
       </header>
 
+      {showAI && <AISuggestPanel onClose={() => setShowAI(false)} />}
+
+      {!planned && (
+        <div className="flex items-start gap-3 rounded-2xl border border-violet-500/20 bg-violet-500/5 p-4 text-xs text-muted-foreground">
+          <Scale className="mt-0.5 size-4 shrink-0 text-violet-500" />
+          <p className="leading-relaxed">
+            No targets set yet. Click{' '}
+            <span className="font-semibold text-foreground">Populate from holdings</span> to seed each
+            instrument and category target from your current mix, then tweak any{' '}
+            <span className="font-semibold text-foreground">Target%</span> to see live rebalance
+            suggestions.
+          </p>
+        </div>
+      )}
+
       {/* KPI strip */}
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           label="Total Portfolio Value"
           value={overview.total_value}
@@ -936,6 +1492,31 @@ function AllocationsPage() {
           sub="Unique asset holdings"
           color="violet"
           icon={Sliders}
+        />
+        <KpiCard
+          label="To Rebalance"
+          customContent={
+            <div className="flex items-baseline gap-3">
+              <div className="text-lg font-extrabold tabular-nums text-rose-500 dark:text-rose-400">
+                <MaskedAmount value={toSell} format={formatCurrency} />
+              </div>
+              <div className="text-lg font-extrabold tabular-nums text-emerald-500 dark:text-emerald-400">
+                <MaskedAmount value={toBuy} format={formatCurrency} />
+              </div>
+            </div>
+          }
+          sub={
+            planned ? (
+              <span>
+                <span className="text-rose-500">sell</span> ·{' '}
+                <span className="text-emerald-500">buy</span> to hit targets
+              </span>
+            ) : (
+              'Set targets to see suggestions'
+            )
+          }
+          color="rose"
+          icon={Scale}
         />
       </div>
 

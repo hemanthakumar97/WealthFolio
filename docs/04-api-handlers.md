@@ -165,27 +165,25 @@ Valid `platform`: `ZERODHA`, `GROWW`, `INDMONEY`, `MANUAL`.
 `instrumentInput`: `{name, isin, amfi_code, asset_type, currency, exchange}`.
 Valid `asset_type` ([instruments.go:346-354](../internal/handlers/instruments.go)): `MF`, `ETF`, `STOCK`, `BOND`, `METAL`, `OTHER`, `US_FUND`.
 
-### 3.7 Categories
+### 3.7 Categories — removed
 
-| Method | Path | Handler | Auth | Description | Request | Response |
-|---|---|---|---|---|---|---|
-| GET | `/categories/` | `CategoriesHandler.List` ([categories.go:57](../internal/handlers/categories.go)) | Yes | With instrument_count | — | `[]categoryResponse` |
-| POST | `/categories/` | `CategoriesHandler.Create` ([categories.go:82](../internal/handlers/categories.go)) | Yes | 409 if name duplicate | `{name, description?, color?}` | `categoryResponse` (201) |
-| GET | `/categories/{id}` | `CategoriesHandler.Get` ([categories.go:113](../internal/handlers/categories.go)) | Yes | | — | `categoryResponse` |
-| PUT | `/categories/{id}` | `CategoriesHandler.Update` ([categories.go:138](../internal/handlers/categories.go)) | Yes | Description/color can be cleared with `""` | `categoryInput` | `categoryResponse` |
-| DELETE | `/categories/{id}` | `CategoriesHandler.Delete` ([categories.go:194](../internal/handlers/categories.go)) | Yes | | — | 204 / 404 |
-| GET | `/categories/{id}/instruments` | `CategoriesHandler.ListInstruments` ([categories.go:212](../internal/handlers/categories.go)) | Yes | | — | `[]categoryInstrumentResponse` |
-| POST | `/categories/{id}/instruments` | `CategoriesHandler.AddInstrument` ([categories.go:242](../internal/handlers/categories.go)) | Yes | Upsert (weight defaults to 1.0) | `{instrument_id, weight}` | `{instrument_id, category_id, weight}` (201) |
-| DELETE | `/categories/{id}/instruments/{instr_id}` | `CategoriesHandler.RemoveInstrument` ([categories.go:278](../internal/handlers/categories.go)) | Yes | | — | 204 / 404 |
+The user-defined categories feature (`CategoriesHandler`, `/categories/*`, and the `categories`/`instrument_categories` tables) was removed (migration `00031`). Instrument classification now lives in `instrument_allocations.alloc_category` and is editable directly on the Allocations page via `PUT /allocations/instruments/{id}` with `{alloc_category}`.
 
 ### 3.8 Allocations
 
 | Method | Path | Handler | Auth | Description | Request | Response |
 |---|---|---|---|---|---|---|
-| GET | `/allocations/` | `AllocationsHandler.Overview` ([allocations.go:61](../internal/handlers/allocations.go)) | Yes | Computes current vs. target per instrument and per `alloc_category` | — | `allocationOverview{total_value, total_sip, instrument_allocations[], category_allocations[]}` |
-| PUT | `/allocations/instruments/{id}` | `AllocationsHandler.UpdateInstrument` ([allocations.go:198](../internal/handlers/allocations.go)) | Yes | Upsert `instrument_allocations` | `{target_percent?, sip_amount?, sip_target_percent?, alloc_category?}` (all optional pointers) | updated `instrumentAllocationResponse` |
-| PUT | `/allocations/categories/{name}` | `AllocationsHandler.UpdateCategory` ([allocations.go:262](../internal/handlers/allocations.go)) | Yes | `name` must be one of `EQUITY/GOLD/DEBT/US_EQUITY/OTHERS` | `{target_percent?, sip_target_percent?, sip_amount?}` | `categoryAllocationResponse` |
-| POST | `/allocations/calculate-distribution` | `AllocationsHandler.CalculateDistribution` ([allocations.go:315](../internal/handlers/allocations.go)) | Yes | Split a lump-sum across instruments by current target_percent weights | `{amount > 0}` | `{amount, items[{instrument_id, instrument_name, alloc_category, target_percent, amount}], total_target}` |
+| GET | `/allocations/` | `AllocationsHandler.Overview` ([allocations.go](../internal/handlers/allocations.go)) | Yes | **Holdings-driven**: one row per instrument with net units > 0 (via `fetchHoldingAllocations`), left-joined with its plan. Computes current vs. target per instrument and per `alloc_category`, plus a **rebalance suggestion** | — | `allocationOverview{total_value, total_sip, instrument_allocations[], category_allocations[]}` |
+| PUT | `/allocations/instruments/{id}` | `AllocationsHandler.UpdateInstrument` ([allocations.go](../internal/handlers/allocations.go)) | Yes | Upsert `instrument_allocations`. Params cast `::numeric` so partial updates don't truncate decimals or write NULL into NOT NULL columns | `{target_percent?, sip_amount?, sip_target_percent?, alloc_category?}` (all optional pointers) | updated `instrumentAllocationResponse` |
+| PUT | `/allocations/categories/{name}` | `AllocationsHandler.UpdateCategory` ([allocations.go](../internal/handlers/allocations.go)) | Yes | `name` must be one of `EQUITY/METALS/DEBT/US_EQUITY/OTHERS` | `{target_percent?, sip_target_percent?, sip_amount?}` | `categoryAllocationResponse` |
+| POST | `/allocations/calculate-distribution` | `AllocationsHandler.CalculateDistribution` ([allocations.go](../internal/handlers/allocations.go)) | Yes | Split a lump-sum across instruments by current target_percent weights | `{amount > 0}` | `{amount, items[{instrument_id, instrument_name, alloc_category, target_percent, amount}], total_target}` |
+| POST | `/allocations/seed-from-holdings` | `AllocationsHandler.SeedFromHoldings` ([allocations.go](../internal/handlers/allocations.go)) | Yes | Populates blank targets + categories from the current portfolio mix (target% = current%). Idempotent: only fills targets still at 0, never clobbers an existing plan; always persists the asset-type-derived category | — | `{seeded: <n>}` |
+| POST | `/allocations/ai-suggest` | `AllocationsHandler.AISuggest` ([allocations.go](../internal/handlers/allocations.go)) | Yes | **AI trend tilt** (wrapped in `longTimeout`, 5-min). `503` if no AI config. Calls `SignalService.SuggestAllocations` → returns suggested category + instrument target %s (review-only, not persisted) | `{risk_profile, horizon?}` | `AllocSuggestResult{risk_profile, generated_at, market_context, rationale, category_suggestions[], instrument_suggestions[]}` |
+| POST | `/allocations/apply-targets` | `AllocationsHandler.ApplyTargets` ([allocations.go](../internal/handlers/allocations.go)) | Yes | Bulk-write reviewed targets in one transaction (`::numeric`-cast upsert). Validates category names; preserves an instrument's existing category on conflict | `{category_targets:[{alloc_category, target_percent}], instrument_targets:[{instrument_id, target_percent, alloc_category}]}` | `{applied: <n>}` |
+
+`SuggestAllocations` ([services/allocation_ai.go](../internal/services/allocation_ai.go)) builds a trend payload with **no external calls**: trailing 1M/3M/6M/1Y returns from `prices`, cached scorecard metrics (`zero1_score`/`relative_rank`/`category_bearish`) via `BuildPortfolioPayloadFromCache`, and market mood. It interpolates risk-profile guardrail bands into the `allocation_suggest` prompt (DB override or built-in default), calls `callProviderJSON`, then clamps + renormalizes so category targets sum to 100 and each category's instrument targets sum to that category's target.
+
+**`instrumentAllocationResponse` (rebalance fields):** in addition to `current_value/current_percent/target_percent/deviation/sip_*`, the Overview returns `asset_type`, `currency`, `current_units`, `current_price`, `unitized` (true for ETF/STOCK/METAL → suggestion in units; MF/US_FUND → in ₹), `has_target` (a plan row exists), `rebalance_amount` (+ve ⇒ sell/trim ₹, −ve ⇒ buy/add ₹), `rebalance_units` (unitized only), and `rebalance_action` (`SELL`/`BUY`/`HOLD`/`""`). `HOLD` when `|deviation| < 0.5pp` (`rebalanceBandPct`); `""` when no plan row exists. Category rows add `rebalance_amount`/`rebalance_action` (only once some category target > 0). Effective `alloc_category` defaults from `asset_type` when unset (METAL→METALS, US_FUND→US_EQUITY, BOND→DEBT, MF/ETF/STOCK→EQUITY, else OTHERS).
 
 ### 3.9 AI Signal
 
