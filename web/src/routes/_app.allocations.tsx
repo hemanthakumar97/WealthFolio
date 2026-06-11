@@ -448,7 +448,7 @@ function CategoryView({ data }: { data: CategoryAllocation[] }) {
                 Adjust target percentages and SIP allocation targets below.
               </p>
             </div>
-            <div className="scrollbar-thin overflow-x-auto">
+            <div className="hidden md:block scrollbar-thin overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border/40 bg-muted/20">
@@ -531,6 +531,64 @@ function CategoryView({ data }: { data: CategoryAllocation[] }) {
                 </tbody>
               </table>
             </div>
+            <div className="md:hidden flex flex-col divide-y divide-border/40">
+              {data.map((ca) => (
+                <div key={ca.alloc_category} className="p-4 space-y-3 transition-colors duration-150 hover:bg-muted/30">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        className="h-3 w-3 rounded-full border border-white/10 shadow-inner"
+                        style={{ backgroundColor: ALLOC_COLORS[ca.alloc_category] }}
+                      />
+                      <span className="font-semibold text-foreground">
+                        {ALLOC_LABELS[ca.alloc_category]}
+                      </span>
+                    </div>
+                    <div className="text-right">
+                      <MaskedAmount value={ca.current_value} format={formatCurrency} className="font-semibold text-foreground/80" />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <div className="space-y-1">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Current / Target</p>
+                      <div className="flex items-center gap-1.5 font-semibold">
+                        <span className="text-muted-foreground">{ca.current_percent.toFixed(2)}%</span>
+                        <span className="text-muted-foreground/40">/</span>
+                        <EditableCell
+                          value={ca.target_percent}
+                          onSave={(v) =>
+                            updateMut.mutateAsync({ name: ca.alloc_category, body: { target_percent: v } })
+                          }
+                        />
+                        <span className="text-muted-foreground/60">%</span>
+                      </div>
+                    </div>
+                    <div className="space-y-1 text-right flex flex-col items-end">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Deviation</p>
+                      <DeviationBadge value={ca.deviation} />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <div className="space-y-1">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">SIP Target</p>
+                      <div className="flex items-center gap-1">
+                        <EditableCell
+                          value={ca.sip_target_percent}
+                          onSave={(v) =>
+                            updateMut.mutateAsync({ name: ca.alloc_category, body: { sip_target_percent: v } })
+                          }
+                        />
+                        <span className="text-muted-foreground font-semibold">%</span>
+                      </div>
+                    </div>
+                    <div className="space-y-1 text-right flex flex-col items-end">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Rebalance</p>
+                      <CategoryRebalanceCell ca={ca} />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
           <div className="flex items-center gap-1.5 border-t border-border/40 bg-muted/10 p-4 text-[11px] text-muted-foreground">
             <span className="size-1.5 animate-pulse rounded-full bg-violet-500" />
@@ -602,115 +660,189 @@ function InstrumentView({
 
       <Card className="overflow-hidden rounded-2xl border border-border/60 bg-card/45 shadow-sm backdrop-blur-sm">
         <CardContent className="p-0">
-          <div className="scrollbar-thin overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border/40 bg-muted/20">
-                  <th className="px-5 py-3.5 text-left text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Instrument
-                  </th>
-                  <th className="px-4 py-3.5 text-left text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Category
-                  </th>
-                  <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Value
-                  </th>
-                  <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Current%
-                  </th>
-                  <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Target%
-                  </th>
-                  <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Deviation
-                  </th>
-                  <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Rebalance
-                  </th>
-                  <th className="px-5 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    SIP Allocation
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/40">
-                {filtered.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="px-4 py-16 text-center text-muted-foreground">
-                      <div className="mx-auto flex max-w-sm flex-col items-center justify-center text-muted-foreground/80">
-                        <div className="mb-3 rounded-full border border-border/40 bg-muted/30 p-4">
-                          <Wallet className="size-8 stroke-[1.5] text-muted-foreground/60" />
-                        </div>
-                        <p className="text-sm font-bold text-foreground">
-                          No instrument allocations found
-                        </p>
-                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                          Add instruments via the Holdings page, then configure their targets here.
-                        </p>
-                      </div>
-                    </td>
+          <>
+            <div className="hidden md:block scrollbar-thin overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border/40 bg-muted/20">
+                    <th className="px-5 py-3.5 text-left text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Instrument
+                    </th>
+                    <th className="px-4 py-3.5 text-left text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Category
+                    </th>
+                    <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Value
+                    </th>
+                    <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Current%
+                    </th>
+                    <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Target%
+                    </th>
+                    <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Deviation
+                    </th>
+                    <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Rebalance
+                    </th>
+                    <th className="px-5 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      SIP Allocation
+                    </th>
                   </tr>
-                ) : (
-                  filtered.map((ia) => (
-                    <tr
-                      key={ia.instrument_id}
-                      className="group transition-colors duration-150 hover:bg-muted/30"
-                    >
-                      <td className="px-5 py-3.5">
-                        <div className="font-semibold text-foreground">{ia.instrument_name}</div>
-                        <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/55">
-                          {ia.asset_type.replace('_', ' ')} ·{' '}
-                          {ia.unitized ? 'units' : 'amount'}
+                </thead>
+                <tbody className="divide-y divide-border/40">
+                  {filtered.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="px-4 py-16 text-center text-muted-foreground">
+                        <div className="mx-auto flex max-w-sm flex-col items-center justify-center text-muted-foreground/80">
+                          <div className="mb-3 rounded-full border border-border/40 bg-muted/30 p-4">
+                            <Wallet className="size-8 stroke-[1.5] text-muted-foreground/60" />
+                          </div>
+                          <p className="text-sm font-bold text-foreground">
+                            No instrument allocations found
+                          </p>
+                          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                            Add instruments via the Holdings page, then configure their targets here.
+                          </p>
                         </div>
-                      </td>
-                      <td className="px-4 py-3.5">
-                        <CategorySelect
-                          value={ia.alloc_category}
-                          onChange={(v) =>
-                            updateMut.mutate({
-                              id: ia.instrument_id,
-                              body: { alloc_category: v },
-                            })
-                          }
-                        />
-                      </td>
-                      <td className="px-4 py-3.5 text-right font-semibold tabular-nums text-foreground/80">
-                        <MaskedAmount value={ia.current_value} format={formatCurrency} />
-                      </td>
-                      <td className="px-4 py-3.5 text-right font-semibold tabular-nums text-muted-foreground/90">
-                        {ia.current_percent.toFixed(2)}%
-                      </td>
-                      <td className="px-4 py-3.5 text-right">
-                        <EditableCell
-                          value={ia.target_percent}
-                          onSave={(v) =>
-                            updateMut.mutateAsync({
-                              id: ia.instrument_id,
-                              body: { target_percent: v },
-                            })
-                          }
-                        />
-                      </td>
-                      <td className="px-4 py-3.5 text-right">
-                        <DeviationBadge value={ia.deviation} />
-                      </td>
-                      <td className="px-4 py-3.5 text-right">
-                        <InstrumentRebalanceCell ia={ia} />
-                      </td>
-                      <td className="px-5 py-3.5 text-right">
-                        <EditableCell
-                          value={ia.sip_amount}
-                          format="currency"
-                          onSave={(v) =>
-                            updateMut.mutateAsync({ id: ia.instrument_id, body: { sip_amount: v } })
-                          }
-                        />
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+                  ) : (
+                    filtered.map((ia) => (
+                      <tr
+                        key={ia.instrument_id}
+                        className="group transition-colors duration-150 hover:bg-muted/30"
+                      >
+                        <td className="px-5 py-3.5">
+                          <div className="font-semibold text-foreground">{ia.instrument_name}</div>
+                          <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/55">
+                            {ia.asset_type.replace('_', ' ')} ·{' '}
+                            {ia.unitized ? 'units' : 'amount'}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3.5">
+                          <CategorySelect
+                            value={ia.alloc_category}
+                            onChange={(v) =>
+                              updateMut.mutate({
+                                id: ia.instrument_id,
+                                body: { alloc_category: v },
+                              })
+                            }
+                          />
+                        </td>
+                        <td className="px-4 py-3.5 text-right font-semibold tabular-nums text-foreground/80">
+                          <MaskedAmount value={ia.current_value} format={formatCurrency} />
+                        </td>
+                        <td className="px-4 py-3.5 text-right font-semibold tabular-nums text-muted-foreground/90">
+                          {ia.current_percent.toFixed(2)}%
+                        </td>
+                        <td className="px-4 py-3.5 text-right">
+                          <EditableCell
+                            value={ia.target_percent}
+                            onSave={(v) =>
+                              updateMut.mutateAsync({
+                                id: ia.instrument_id,
+                                body: { target_percent: v },
+                              })
+                            }
+                          />
+                        </td>
+                        <td className="px-4 py-3.5 text-right">
+                          <DeviationBadge value={ia.deviation} />
+                        </td>
+                        <td className="px-4 py-3.5 text-right">
+                          <InstrumentRebalanceCell ia={ia} />
+                        </td>
+                        <td className="px-5 py-3.5 text-right">
+                          <EditableCell
+                            value={ia.sip_amount}
+                            format="currency"
+                            onSave={(v) =>
+                              updateMut.mutateAsync({ id: ia.instrument_id, body: { sip_amount: v } })
+                            }
+                          />
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="md:hidden flex flex-col divide-y divide-border/40">
+              {filtered.length === 0 ? (
+                  <div className="px-4 py-16 text-center text-muted-foreground">
+                    <div className="mx-auto flex max-w-sm flex-col items-center justify-center text-muted-foreground/80">
+                      <div className="mb-3 rounded-full border border-border/40 bg-muted/30 p-4">
+                        <Wallet className="size-8 stroke-[1.5] text-muted-foreground/60" />
+                      </div>
+                      <p className="text-sm font-bold text-foreground">
+                        No instrument allocations found
+                      </p>
+                      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                        Add instruments via the Holdings page, then configure their targets here.
+                      </p>
+                    </div>
+                  </div>
+              ) : (
+                filtered.map((ia) => (
+                  <div key={ia.instrument_id} className="p-4 space-y-3 transition-colors duration-150 hover:bg-muted/30">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="font-semibold text-foreground">{ia.instrument_name}</div>
+                        <div className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/55">
+                          {ia.asset_type.replace('_', ' ')} · {ia.unitized ? 'units' : 'amount'}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <MaskedAmount value={ia.current_value} format={formatCurrency} className="font-semibold text-foreground/80" />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <div className="space-y-1">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Category</p>
+                        <CategorySelect
+                          value={ia.alloc_category}
+                          onChange={(v) => updateMut.mutate({ id: ia.instrument_id, body: { alloc_category: v } })}
+                        />
+                      </div>
+                      <div className="space-y-1 text-right flex flex-col items-end">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Deviation</p>
+                        <DeviationBadge value={ia.deviation} />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <div className="space-y-1">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Current / Target</p>
+                        <div className="flex items-center gap-1.5 font-semibold">
+                          <span className="text-muted-foreground">{ia.current_percent.toFixed(2)}%</span>
+                          <span className="text-muted-foreground/40">/</span>
+                          <EditableCell
+                            value={ia.target_percent}
+                            onSave={(v) => updateMut.mutateAsync({ id: ia.instrument_id, body: { target_percent: v } })}
+                          />
+                          <span className="text-muted-foreground/60">%</span>
+                        </div>
+                      </div>
+                      <div className="space-y-1 text-right flex flex-col items-end">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Rebalance</p>
+                        <InstrumentRebalanceCell ia={ia} />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-sm border-t border-border/20 pt-3">
+                      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">SIP Allocation</span>
+                      <EditableCell
+                        value={ia.sip_amount}
+                        format="currency"
+                        onSave={(v) => updateMut.mutateAsync({ id: ia.instrument_id, body: { sip_amount: v } })}
+                      />
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-border/40 bg-muted/10 p-4 text-[11px] text-muted-foreground">
             <span className="inline-flex items-center gap-1.5">
               <ArrowDownRight className="size-3 text-rose-500" /> Sell / Redeem when overweight
@@ -895,7 +1027,7 @@ function DistributionCalculator() {
                 'overflow-hidden rounded-2xl border border-border/60 bg-card/45 shadow-sm',
               )}
             >
-              <div className="scrollbar-thin overflow-x-auto">
+              <div className="hidden md:block scrollbar-thin overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border/40 bg-muted/20">
@@ -945,6 +1077,39 @@ function DistributionCalculator() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+              <div className="md:hidden flex flex-col divide-y divide-border/40">
+                {calcMut.data.items.map((item) => (
+                  <div key={item.instrument_id} className="p-4 space-y-3 transition-colors duration-150 hover:bg-muted/30">
+                    <div className="flex items-start justify-between">
+                      <div className="font-semibold text-foreground">{item.instrument_name}</div>
+                      <div className="text-right">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Suggested</p>
+                        <MaskedAmount value={item.amount} format={formatCurrency} className="font-extrabold text-foreground" />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <div className="space-y-1">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Category</p>
+                        <Badge
+                          variant="outline"
+                          className="rounded-full border bg-transparent px-2 py-0.5 text-[9px] font-bold tracking-wide"
+                          style={{
+                            borderColor: ALLOC_COLORS[item.alloc_category] + '30',
+                            color: ALLOC_COLORS[item.alloc_category],
+                            backgroundColor: ALLOC_COLORS[item.alloc_category] + '0d',
+                          }}
+                        >
+                          {ALLOC_LABELS[item.alloc_category]}
+                        </Badge>
+                      </div>
+                      <div className="space-y-1 text-right flex flex-col items-end">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Target</p>
+                        <span className="font-semibold tabular-nums text-muted-foreground/90">{item.target_percent.toFixed(1)}%</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -1164,42 +1329,72 @@ function AISuggestPanel({ onClose }: { onClose: () => void }) {
               <div className="border-b border-border/40 bg-muted/20 px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground/90">
                 Category Targets
               </div>
-              <table className="w-full text-sm">
-                <tbody className="divide-y divide-border/40">
-                  {data.category_suggestions.map((c) => (
-                    <tr key={c.alloc_category} className="hover:bg-muted/20">
-                      <td className="px-4 py-2.5">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="size-2.5 rounded-full"
-                            style={{ backgroundColor: ALLOC_COLORS[c.alloc_category] }}
+              <div className="hidden md:block">
+                <table className="w-full text-sm">
+                  <tbody className="divide-y divide-border/40">
+                    {data.category_suggestions.map((c) => (
+                      <tr key={c.alloc_category} className="hover:bg-muted/20">
+                        <td className="px-4 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="size-2.5 rounded-full"
+                              style={{ backgroundColor: ALLOC_COLORS[c.alloc_category] }}
+                            />
+                            <span className="font-semibold text-foreground">
+                              {ALLOC_LABELS[c.alloc_category]}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <TargetShift
+                            current={c.current_percent}
+                            suggested={Number(catEdit[c.alloc_category] ?? c.suggested_target_percent)}
                           />
-                          <span className="font-semibold text-foreground">
-                            {ALLOC_LABELS[c.alloc_category]}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <TargetShift
-                          current={c.current_percent}
-                          suggested={Number(catEdit[c.alloc_category] ?? c.suggested_target_percent)}
-                        />
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <TrendChip trend={c.trend} />
-                      </td>
-                      <td className="px-4 py-2.5 text-right">
-                        <PctInput
-                          value={String(catEdit[c.alloc_category] ?? c.suggested_target_percent)}
-                          onChange={(v) =>
-                            setCatEdit((m) => ({ ...m, [c.alloc_category]: v }))
-                          }
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <TrendChip trend={c.trend} />
+                        </td>
+                        <td className="px-4 py-2.5 text-right">
+                          <PctInput
+                            value={String(catEdit[c.alloc_category] ?? c.suggested_target_percent)}
+                            onChange={(v) =>
+                              setCatEdit((m) => ({ ...m, [c.alloc_category]: v }))
+                            }
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="md:hidden flex flex-col divide-y divide-border/40">
+                {data.category_suggestions.map((c) => (
+                  <div key={c.alloc_category} className="p-4 space-y-3 hover:bg-muted/20">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="size-2.5 rounded-full"
+                        style={{ backgroundColor: ALLOC_COLORS[c.alloc_category] }}
+                      />
+                      <span className="font-semibold text-foreground">
+                        {ALLOC_LABELS[c.alloc_category]}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <TargetShift
+                        current={c.current_percent}
+                        suggested={Number(catEdit[c.alloc_category] ?? c.suggested_target_percent)}
+                      />
+                      <TrendChip trend={c.trend} />
+                      <PctInput
+                        value={String(catEdit[c.alloc_category] ?? c.suggested_target_percent)}
+                        onChange={(v) =>
+                          setCatEdit((m) => ({ ...m, [c.alloc_category]: v }))
+                        }
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
 
             {/* Instrument suggestions grouped by category */}
@@ -1215,45 +1410,80 @@ function AISuggestPanel({ onClose }: { onClose: () => void }) {
                       {ALLOC_LABELS[cat]} funds
                     </span>
                   </div>
-                  <table className="w-full text-sm">
-                    <tbody className="divide-y divide-border/40">
-                      {instrumentsByCat[cat].map((it) => (
-                        <tr key={it.instrument_id} className="align-top hover:bg-muted/20">
-                          <td className="px-4 py-2.5">
-                            <div className="font-semibold text-foreground">
-                              {it.instrument_name}
-                            </div>
-                            {it.reason && (
-                              <div className="mt-0.5 max-w-md text-[11px] leading-relaxed text-muted-foreground">
-                                {it.reason}
+                  <div className="hidden md:block">
+                    <table className="w-full text-sm">
+                      <tbody className="divide-y divide-border/40">
+                        {instrumentsByCat[cat].map((it) => (
+                          <tr key={it.instrument_id} className="align-top hover:bg-muted/20">
+                            <td className="px-4 py-2.5">
+                              <div className="font-semibold text-foreground">
+                                {it.instrument_name}
                               </div>
+                              {it.reason && (
+                                <div className="mt-0.5 max-w-md text-[11px] leading-relaxed text-muted-foreground">
+                                  {it.reason}
+                                </div>
+                              )}
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-2.5">
+                              <TargetShift
+                                current={it.current_percent}
+                                suggested={Number(
+                                  instrEdit[it.instrument_id] ?? it.suggested_target_percent,
+                                )}
+                              />
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <TrendChip trend={it.trend} />
+                            </td>
+                            <td className="px-4 py-2.5 text-right">
+                              <PctInput
+                                value={String(
+                                  instrEdit[it.instrument_id] ?? it.suggested_target_percent,
+                                )}
+                                onChange={(v) =>
+                                  setInstrEdit((m) => ({ ...m, [it.instrument_id]: v }))
+                                }
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="md:hidden flex flex-col divide-y divide-border/40">
+                    {instrumentsByCat[cat].map((it) => (
+                      <div key={it.instrument_id} className="p-4 space-y-3 hover:bg-muted/20">
+                        <div>
+                          <div className="font-semibold text-foreground">
+                            {it.instrument_name}
+                          </div>
+                          {it.reason && (
+                            <div className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+                              {it.reason}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <TargetShift
+                            current={it.current_percent}
+                            suggested={Number(
+                              instrEdit[it.instrument_id] ?? it.suggested_target_percent,
                             )}
-                          </td>
-                          <td className="whitespace-nowrap px-4 py-2.5">
-                            <TargetShift
-                              current={it.current_percent}
-                              suggested={Number(
-                                instrEdit[it.instrument_id] ?? it.suggested_target_percent,
-                              )}
-                            />
-                          </td>
-                          <td className="px-4 py-2.5">
-                            <TrendChip trend={it.trend} />
-                          </td>
-                          <td className="px-4 py-2.5 text-right">
-                            <PctInput
-                              value={String(
-                                instrEdit[it.instrument_id] ?? it.suggested_target_percent,
-                              )}
-                              onChange={(v) =>
-                                setInstrEdit((m) => ({ ...m, [it.instrument_id]: v }))
-                              }
-                            />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                          />
+                          <TrendChip trend={it.trend} />
+                          <PctInput
+                            value={String(
+                              instrEdit[it.instrument_id] ?? it.suggested_target_percent,
+                            )}
+                            onChange={(v) =>
+                              setInstrEdit((m) => ({ ...m, [it.instrument_id]: v }))
+                            }
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ))}
 

@@ -57,6 +57,12 @@
     font-feature-settings: 'cv11', 'ss01';
     font-variation-settings: 'opsz' 32;
   }
+
+  @media (max-width: 639px) {
+    html {
+      font-size: 70%;
+    }
+  }
 }
 
 @layer utilities {

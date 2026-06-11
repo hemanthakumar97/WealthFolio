@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hemanthakumar97/wealthfolio/internal/domain"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -80,8 +81,11 @@ func (c *PortfolioCalculator) computeFIFOPositions(ctx context.Context) (map[int
 	defer rows.Close()
 
 	type instrState struct {
-		lots     []fifoLot
-		platform string
+		lots           []fifoLot
+		platform       string
+		totalCost      float64 // avg-cost tracking (IndMoney only)
+		totalBought    float64
+		totalRemaining float64
 	}
 	states := map[int64]*instrState{}
 
@@ -104,20 +108,35 @@ func (c *PortfolioCalculator) computeFIFOPositions(ctx context.Context) (map[int
 			if qty <= 0 {
 				continue
 			}
-			s.lots = append(s.lots, fifoLot{qty: qty, cost: amount / qty})
+			if platform == domain.PlatformINDMoney {
+				s.totalCost += amount
+				s.totalBought += qty
+				s.totalRemaining += qty
+			} else {
+				s.lots = append(s.lots, fifoLot{qty: qty, cost: amount / qty})
+			}
 		case "BONUS":
 			if qty > 0 {
-				s.lots = append(s.lots, fifoLot{qty: qty, cost: 0})
+				if platform == domain.PlatformINDMoney {
+					s.totalBought += qty
+					s.totalRemaining += qty
+				} else {
+					s.lots = append(s.lots, fifoLot{qty: qty, cost: 0})
+				}
 			}
 		case "SELL", "SWITCH_OUT":
-			remaining := qty
-			for len(s.lots) > 0 && remaining > 0.000001 {
-				if s.lots[0].qty <= remaining+0.000001 {
-					remaining -= s.lots[0].qty
-					s.lots = s.lots[1:]
-				} else {
-					s.lots[0].qty -= remaining
-					remaining = 0
+			if platform == domain.PlatformINDMoney {
+				s.totalRemaining -= qty
+			} else {
+				remaining := qty
+				for len(s.lots) > 0 && remaining > 0.000001 {
+					if s.lots[0].qty <= remaining+0.000001 {
+						remaining -= s.lots[0].qty
+						s.lots = s.lots[1:]
+					} else {
+						s.lots[0].qty -= remaining
+						remaining = 0
+					}
 				}
 			}
 		}
@@ -129,9 +148,16 @@ func (c *PortfolioCalculator) computeFIFOPositions(ctx context.Context) (map[int
 	positions := make(map[int64]instrPosition, len(states))
 	for instrID, s := range states {
 		var totalUnits, totalCost float64
-		for _, l := range s.lots {
-			totalUnits += l.qty
-			totalCost += l.qty * l.cost
+		if s.platform == domain.PlatformINDMoney {
+			totalUnits = s.totalRemaining
+			if s.totalBought > 0 {
+				totalCost = s.totalRemaining * (s.totalCost / s.totalBought)
+			}
+		} else {
+			for _, l := range s.lots {
+				totalUnits += l.qty
+				totalCost += l.qty * l.cost
+			}
 		}
 		if totalUnits > 0.000001 {
 			positions[instrID] = instrPosition{
@@ -371,9 +397,11 @@ func (c *PortfolioCalculator) ClosedPositions(ctx context.Context, f FilterParam
 		lots         []fifoLot // remaining buy lots (FIFO queue)
 		unitsBought  float64
 		unitsSold    float64
-		costOfSold   float64 // FIFO cost basis of all sold units
+		costOfSold   float64 // cost basis of all sold units
 		sellProceeds float64
 		lastSellDate string
+		totalCost    float64 // avg-cost tracking (IndMoney only)
+		totalBought  float64
 	}
 	states := map[int64]*realizedState{}
 
@@ -403,12 +431,21 @@ func (c *PortfolioCalculator) ClosedPositions(ctx context.Context, f FilterParam
 				costINR = amount * rateForDate(txDate)
 			}
 			s.unitsBought += qty
-			s.lots = append(s.lots, fifoLot{qty: qty, cost: costINR / qty})
+			if s.platform == domain.PlatformINDMoney {
+				s.totalCost += costINR
+				s.totalBought += qty
+			} else {
+				s.lots = append(s.lots, fifoLot{qty: qty, cost: costINR / qty})
+			}
 
 		case "BONUS":
 			if qty > 0 {
 				s.unitsBought += qty
-				s.lots = append(s.lots, fifoLot{qty: qty, cost: 0})
+				if s.platform == domain.PlatformINDMoney {
+					s.totalBought += qty
+				} else {
+					s.lots = append(s.lots, fifoLot{qty: qty, cost: 0})
+				}
 			}
 
 		case "SELL", "SWITCH_OUT":
@@ -419,17 +456,24 @@ func (c *PortfolioCalculator) ClosedPositions(ctx context.Context, f FilterParam
 			}
 			s.sellProceeds += proceedsINR
 			s.lastSellDate = txDate
-			// consume lots FIFO; lot costs are already in INR
-			remaining := qty
-			for len(s.lots) > 0 && remaining > 0.000001 {
-				if s.lots[0].qty <= remaining+0.000001 {
-					s.costOfSold += s.lots[0].qty * s.lots[0].cost
-					remaining -= s.lots[0].qty
-					s.lots = s.lots[1:]
-				} else {
-					s.costOfSold += remaining * s.lots[0].cost
-					s.lots[0].qty -= remaining
-					remaining = 0
+			if s.platform == domain.PlatformINDMoney {
+				// avg-cost: cost of sold units = qty × avg cost per unit at time of sell
+				if s.totalBought > 0 {
+					s.costOfSold += qty * (s.totalCost / s.totalBought)
+				}
+			} else {
+				// consume lots FIFO; lot costs are already in INR
+				remaining := qty
+				for len(s.lots) > 0 && remaining > 0.000001 {
+					if s.lots[0].qty <= remaining+0.000001 {
+						s.costOfSold += s.lots[0].qty * s.lots[0].cost
+						remaining -= s.lots[0].qty
+						s.lots = s.lots[1:]
+					} else {
+						s.costOfSold += remaining * s.lots[0].cost
+						s.lots[0].qty -= remaining
+						remaining = 0
+					}
 				}
 			}
 		}

@@ -199,6 +199,7 @@ function RunTab() {
   const [selectedAuto, setSelectedAuto] = useState<AutoSearchResult | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
+  const [showMappedOnly, setShowMappedOnly] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const { on } = useSSE();
 
@@ -262,6 +263,11 @@ function RunTab() {
 
   const status = statusData as BackfillStatus | undefined;
 
+  const filteredInstruments = (instruments as Instrument[]).filter((i) => {
+    const isMapped = !!(i.amfi_code || i.yahoo_symbol);
+    return showMappedOnly ? isMapped : !isMapped;
+  });
+
   return (
     <div className="space-y-6">
       <div className="space-y-6 rounded-2xl border border-border/80 bg-card/40 p-6 shadow-xl shadow-black/5 backdrop-blur-md">
@@ -279,13 +285,24 @@ function RunTab() {
 
         {/* Instrument selector */}
         <div className="space-y-2">
-          <label className="text-sm font-semibold text-foreground/90">Instrument</label>
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-semibold text-foreground/90">Instrument</label>
+            <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
+              <input 
+                type="checkbox" 
+                checked={showMappedOnly}
+                onChange={(e) => setShowMappedOnly(e.target.checked)}
+                className="rounded border-border/80 bg-card/30 text-primary focus:ring-primary h-3.5 w-3.5"
+              />
+              Show backfilled/mapped instruments only
+            </label>
+          </div>
           <Select value={instrumentId} onValueChange={setInstrumentId}>
             <SelectTrigger className="w-full rounded-xl border-border/80 bg-card/30 backdrop-blur-sm focus:ring-primary sm:w-96">
               <SelectValue placeholder="Select instrument to backfill…" />
             </SelectTrigger>
             <SelectContent className="backdrop-blur-md">
-              {(instruments as Instrument[]).map((i) => (
+              {filteredInstruments.map((i) => (
                 <SelectItem key={i.id} value={String(i.id)}>
                   <div className="flex w-full items-center justify-between">
                     <span className="font-semibold text-foreground/90">{i.name}</span>

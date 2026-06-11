@@ -502,6 +502,17 @@ function Controlled({
 
 // --- History -----------------------------------------------------------------
 
+function formatFilename(name: string) {
+  if (name.length <= 25) return name;
+  const extIndex = name.lastIndexOf('.');
+  if (extIndex > -1) {
+    const ext = name.slice(extIndex);
+    const base = name.slice(0, extIndex);
+    return `${base.slice(0, 20)}..${ext}`;
+  }
+  return `${name.slice(0, 22)}...`;
+}
+
 function UploadHistorySection() {
   const { data, isLoading } = useQuery({
     queryKey: ['upload-history'],
@@ -532,43 +543,89 @@ function UploadHistorySection() {
             </p>
           </div>
         ) : (
-          <div className="scrollbar-thin overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border/85 bg-muted/20">
-                  <th className="px-4 py-3.5 text-left text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    File Name
-                  </th>
-                  <th className="px-4 py-3.5 text-left text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Platform
-                  </th>
-                  <th className="px-4 py-3.5 text-left text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Status
-                  </th>
-                  <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Total
-                  </th>
-                  <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Imported
-                  </th>
-                  <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Duplicates
-                  </th>
-                  <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Errors
-                  </th>
-                  <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
-                    Uploaded At
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/60">
-                {data.map((row) => (
-                  <UploadRow key={row.id} row={row} />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <div className="hidden md:block scrollbar-thin overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border/85 bg-muted/20">
+                    <th className="px-4 py-3.5 text-left text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      File Name
+                    </th>
+                    <th className="px-4 py-3.5 text-left text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Platform
+                    </th>
+                    <th className="px-4 py-3.5 text-left text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Status
+                    </th>
+                    <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Total
+                    </th>
+                    <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Imported
+                    </th>
+                    <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Duplicates
+                    </th>
+                    <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Errors
+                    </th>
+                    <th className="px-4 py-3.5 text-right text-[10px] font-bold uppercase tracking-widest text-muted-foreground/90">
+                      Uploaded At
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {data.map((row) => (
+                    <UploadRow key={row.id} row={row} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="md:hidden flex flex-col divide-y divide-border/60">
+              {data.map((row) => (
+                <div key={row.id} className="p-4 space-y-3 transition-colors duration-150 hover:bg-muted/40">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="rounded-xl border border-indigo-500/10 bg-indigo-500/10 p-2 text-indigo-500 shrink-0">
+                        <FileText className="size-4 stroke-[1.5]" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate font-semibold text-foreground text-sm" title={row.filename}>
+                          {formatFilename(row.filename)}
+                        </p>
+                        <p className="text-[10px] font-medium text-muted-foreground/80 mt-0.5">
+                          {formatDateTime(row.uploaded_at)}
+                        </p>
+                      </div>
+                    </div>
+                    <StatusBadge status={row.status} />
+                  </div>
+                  
+                  <div className="flex flex-wrap items-center justify-between gap-y-2 text-xs">
+                    <span className="inline-flex items-center rounded-md border border-border/50 bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      {row.platform}
+                    </span>
+                    <div className="flex items-center gap-3 text-right pr-[10%]">
+                      <div>
+                        <span className="text-[10px] uppercase tracking-wider text-muted-foreground mr-1.5">Total</span>
+                        <span className="font-semibold text-foreground">{row.records_total}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] uppercase tracking-wider text-muted-foreground mr-1.5">Ok</span>
+                        <span className="font-semibold text-emerald-500">{row.records_imported}</span>
+                      </div>
+                      {(row.records_duplicates > 0 || row.records_errors > 0) && (
+                        <div>
+                          <span className="text-[10px] uppercase tracking-wider text-muted-foreground mr-1.5">Skip</span>
+                          <span className="font-semibold text-amber-500">{row.records_duplicates + row.records_errors}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
         )}
       </CardContent>
     </Card>
@@ -587,7 +644,7 @@ function UploadRow({ row }: { row: UploadHistoryItem }) {
             className="max-w-[180px] truncate font-semibold text-foreground xl:max-w-[280px]"
             title={row.filename}
           >
-            {row.filename}
+            {formatFilename(row.filename)}
           </span>
         </div>
       </td>

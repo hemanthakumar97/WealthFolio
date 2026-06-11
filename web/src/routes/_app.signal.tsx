@@ -701,7 +701,7 @@ function HoldingsTable({
           onClose={() => setAnalysisTarget(null)}
         />
       )}
-      <div className="overflow-hidden rounded-xl border border-border">
+      <div className="hidden md:block overflow-hidden rounded-xl border border-border">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-muted/30">
@@ -1023,6 +1023,267 @@ function HoldingsTable({
             })}
           </tbody>
         </table>
+      </div>
+      <div className="md:hidden flex flex-col divide-y divide-border/60 rounded-xl border border-border">
+        {signals.map((sig) => {
+          const h = holdingMap.get(sig.instrument_id);
+          const action = ACTION_CFG[sig.action as SignalAction] ?? ACTION_CFG.HOLD;
+          const ActionIcon = action.icon;
+          const isOpen = openId === sig.instrument_id;
+          const pct = h?.profit_loss_percent;
+
+          return (
+            <div key={sig.instrument_id} className={cn('p-4 space-y-4 transition-colors hover:bg-muted/20', isOpen && 'bg-muted/10')}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={cn(
+                        'rounded border px-1.5 py-0.5 text-[10px] font-medium',
+                        TYPE_COLORS[h?.asset_type ?? ''] ??
+                          'border-gray-500/30 bg-gray-500/5 text-gray-400',
+                      )}
+                    >
+                      {h?.asset_type ?? '—'}
+                    </span>
+                    {['MF', 'ETF', 'STOCK', 'US_FUND', 'METAL', 'GOLD'].includes(h?.asset_type ?? '') ? (
+                      <div className="flex flex-col gap-0.5">
+                        <button
+                          onClick={() =>
+                            setAnalysisTarget({
+                              id: sig.instrument_id,
+                              name: sig.instrument_name,
+                            })
+                          }
+                          className="group flex items-center gap-1.5 text-left font-medium leading-tight transition-colors hover:text-primary"
+                          title="Click to view full scorecard"
+                        >
+                          <span className="underline-offset-2 group-hover:underline">
+                            {sig.instrument_name}
+                          </span>
+                          <LineChart className="size-3 shrink-0 text-muted-foreground/40 transition-colors group-hover:text-primary" />
+                        </button>
+                        {sig.reason && (
+                          <p className="line-clamp-1 text-[10px] leading-relaxed text-muted-foreground/70">
+                            {sig.reason}
+                          </p>
+                        )}
+                        {((): React.ReactNode => {
+                          const at = h?.asset_type ?? '';
+                          const isTickertape = ['ETF', 'STOCK', 'METAL', 'GOLD'].includes(at);
+                          const isGroww = at === 'MF';
+                          const isYahoo = at === 'US_FUND';
+                          if (!isTickertape && !isGroww && !isYahoo) return null;
+
+                          if (isYahoo) {
+                            const yahoo = h?.yahoo_symbol;
+                            return yahoo ? (
+                              <a
+                                href={`https://finance.yahoo.com/quote/${yahoo}/`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-0.5 text-[10px] text-primary/70 hover:text-primary hover:underline"
+                                onClick={e => e.stopPropagation()}
+                              >
+                                <ExternalLink className="size-2.5" />
+                                Yahoo Finance
+                              </a>
+                            ) : (
+                              <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground/40">
+                                <ExternalLink className="size-2.5" />
+                                Yahoo Finance
+                              </span>
+                            );
+                          }
+
+                          const currentSlug = isGroww ? (h?.groww_slug ?? '') : (h?.tickertape_slug ?? '');
+                          const label = isGroww ? 'Groww' : 'Tickertape';
+                          const placeholder = isGroww
+                            ? 'groww.in/mutual-funds/… or slug'
+                            : 'tickertape.in/etfs/… or /stocks/…';
+                          const isPending = isGroww
+                            ? saveGrowwMutation.isPending
+                            : saveTickertapeMutation.isPending;
+                          const doSave = (slug: string) => {
+                            if (isGroww) saveGrowwMutation.mutate({ id: sig.instrument_id, slug });
+                            else saveTickertapeMutation.mutate({ id: sig.instrument_id, slug });
+                          };
+
+                          return urlEditId === sig.instrument_id ? (
+                            <div className="mt-1 flex flex-col gap-1">
+                              <Input
+                                autoFocus
+                                value={urlInput}
+                                onChange={e => setUrlInput(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter' && urlInput.trim()) doSave(urlInput.trim());
+                                  if (e.key === 'Escape') { setUrlEditId(null); setUrlInput(''); }
+                                }}
+                                placeholder={placeholder}
+                                className="h-6 w-full max-w-[200px] px-1.5 text-[10px]"
+                              />
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => urlInput.trim() && doSave(urlInput.trim())}
+                                  disabled={!urlInput.trim() || isPending}
+                                  className="text-[10px] text-primary hover:underline disabled:opacity-40"
+                                >
+                                  {isPending ? '…' : 'Save'}
+                                </button>
+                                <button
+                                  onClick={() => { setUrlEditId(null); setUrlInput(''); }}
+                                  className="text-[10px] text-muted-foreground hover:text-foreground"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : currentSlug ? (
+                            <div className="flex items-center gap-1">
+                              <a
+                                href={isGroww ? `https://groww.in/mutual-funds/${currentSlug}` : `https://www.tickertape.in${currentSlug}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-0.5 text-[10px] text-primary/70 hover:text-primary hover:underline"
+                                onClick={e => e.stopPropagation()}
+                              >
+                                <ExternalLink className="size-2.5" />
+                                <span>{label}</span>
+                              </a>
+                              <button
+                                onClick={() => { setUrlEditId(sig.instrument_id); setUrlInput(currentSlug); }}
+                                className="text-muted-foreground/40 hover:text-primary transition-colors"
+                                title={`Edit ${label} URL`}
+                              >
+                                <Pencil className="size-2.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => { setUrlEditId(sig.instrument_id); setUrlInput(''); }}
+                              className="flex items-center gap-0.5 text-[10px] text-muted-foreground/50 transition-colors hover:text-primary"
+                              title={`Set ${label} URL for analysis`}
+                            >
+                              <ExternalLink className="size-2.5" />
+                              <span>{label} URL</span>
+                              <Pencil className="size-2" />
+                            </button>
+                          );
+                        })()}
+                      </div>
+                    ) : (
+                      <span className="font-medium leading-tight">{sig.instrument_name}</span>
+                    )}
+                  </div>
+                </div>
+                <div className="shrink-0 flex flex-col items-end gap-2 text-right">
+                  <button
+                    onClick={() => setOpenId(isOpen ? null : sig.instrument_id)}
+                    className={cn(
+                      'flex flex-col items-end gap-1 rounded-lg px-2 py-1.5 transition-all',
+                      isOpen
+                        ? cn(action.border, action.bg, 'ring-1 ring-primary/20')
+                        : cn('border border-border hover:border-foreground/20', action.bg),
+                    )}
+                  >
+                    <span className={cn('flex items-center gap-1.5 text-[10px] font-bold uppercase', action.color)}>
+                      <ActionIcon className="size-3" />
+                      {action.label}
+                    </span>
+                    <ConfidenceBar value={sig.confidence} className="w-12 h-1" />
+                  </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-3 text-sm">
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Invested</p>
+                  <span className="font-semibold">{h ? <MaskedAmount value={h.invested_amount} format={formatINR} /> : '—'}</span>
+                </div>
+                <div className="text-center">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Value</p>
+                  <span className="font-semibold">{h?.current_value != null ? <MaskedAmount value={h.current_value} format={formatINR} /> : '—'}</span>
+                </div>
+                <div className="text-right flex flex-col items-end">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Return</p>
+                  {pct != null ? (
+                    <span className={cn('font-semibold', pct >= 0 ? 'text-[hsl(var(--success))]' : 'text-destructive')}>
+                      {pct >= 0 ? '+' : ''}{pct.toFixed(2)}%
+                    </span>
+                  ) : '—'}
+                </div>
+              </div>
+              <div className="flex items-center justify-between text-sm border-t border-border/20 pt-3">
+                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Score</span>
+                <ScoreSignalCell instrumentId={sig.instrument_id} fallbackScore={sig.zero1_score} />
+              </div>
+              {isOpen && (
+                <div className="pt-3 border-t border-border/40 space-y-3">
+                  {(() => {
+                    const s = sig.zero1_score ?? 0;
+                    if (s <= 0 || scoreToSignalAction(s) === sig.action) return null;
+                    return (
+                      <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+                        <AlertTriangle className="size-3.5 text-amber-400 shrink-0 mt-0.5" />
+                        <p className="text-[11px] text-amber-400/80">
+                          Score formula says <strong>{ACTION_CFG[scoreToSignalAction(s)].label}</strong> but AI signal is <strong>{action.label}</strong> — STCG tax or category context overrode the raw score.
+                        </p>
+                      </div>
+                    );
+                  })()}
+                  <div className="min-w-0 space-y-3">
+                    <p className="text-sm leading-relaxed text-foreground font-medium">{sig.reason}</p>
+                    {sig.key_points?.length > 0 && (
+                      <ul className="space-y-1.5">
+                        {sig.key_points.map((pt, i) => (
+                          <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
+                            <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-primary/40" />
+                            {pt}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {sig.recent_events && (
+                      <div className={cn(
+                        'rounded-md border px-3 py-2',
+                        sig.events_impact === 'positive' ? 'border-emerald-500/30 bg-emerald-500/5' :
+                        sig.events_impact === 'negative' ? 'border-red-500/30 bg-red-500/5' :
+                        'border-blue-500/20 bg-blue-500/5',
+                      )}>
+                        <p className={cn(
+                          'text-[10px] font-semibold uppercase tracking-wider mb-1',
+                          sig.events_impact === 'positive' ? 'text-emerald-400' :
+                          sig.events_impact === 'negative' ? 'text-red-400' :
+                          'text-blue-400',
+                        )}>
+                          Recent Events {sig.events_impact === 'positive' ? '↑' : sig.events_impact === 'negative' ? '↓' : '·'}
+                        </p>
+                        <p className="text-xs leading-relaxed text-muted-foreground">{sig.recent_events}</p>
+                      </div>
+                    )}
+                    {sig.qualitative_note && (
+                      <div className="rounded-md border border-border bg-muted/20 px-3 py-2">
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">AI Context</p>
+                        <p className="text-xs leading-relaxed text-muted-foreground italic">{sig.qualitative_note}</p>
+                      </div>
+                    )}
+                    {sig.tax_note && (
+                      <div className="flex items-start gap-2">
+                        <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/8 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-amber-400">TAX</span>
+                        <p className="text-xs leading-relaxed text-amber-400/80">{sig.tax_note}</p>
+                      </div>
+                    )}
+                  </div>
+                  <div className="pt-2">
+                    <div className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1', profileCfg.border, profileCfg.bg)}>
+                      <profileCfg.icon className={cn('size-3', profileCfg.color)} />
+                      <span className={cn('text-[11px] font-medium', profileCfg.color)}>{profileCfg.label}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </>
   );

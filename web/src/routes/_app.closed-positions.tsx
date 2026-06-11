@@ -577,64 +577,116 @@ function ClosedPositionsPage() {
               </p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  {table.getHeaderGroups().map((hg) => (
-                    <tr key={hg.id} className="border-b border-border/40">
-                      {hg.headers.map((header) => (
-                        <th
-                          key={header.id}
-                          className={cn(
-                            'border-r border-border/10 px-4 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground/80 last:border-r-0',
-                            (header.column.columnDef.meta as any)?.align === 'right' &&
-                              'text-right',
-                          )}
-                        >
-                          {header.column.getCanSort() ? (
-                            <button
-                              onClick={header.column.getToggleSortingHandler()}
-                              className="inline-flex items-center gap-1 transition-all duration-200 hover:text-foreground active:scale-95"
-                            >
-                              {flexRender(header.column.columnDef.header, header.getContext())}
-                              {header.column.getIsSorted() === 'asc' ? (
-                                <ArrowUp className="size-3 text-primary" />
-                              ) : header.column.getIsSorted() === 'desc' ? (
-                                <ArrowDown className="size-3 text-primary" />
-                              ) : (
-                                <ArrowUpDown className="size-3 opacity-40 hover:opacity-100" />
-                              )}
-                            </button>
-                          ) : (
-                            flexRender(header.column.columnDef.header, header.getContext())
-                          )}
-                        </th>
-                      ))}
-                    </tr>
-                  ))}
-                </thead>
-                <tbody>
-                  {table.getRowModel().rows.map((row) => (
-                    <tr
-                      key={row.id}
-                      className="border-b border-border/40 transition-colors duration-150 last:border-0 hover:bg-muted/35"
-                    >
-                      {row.getVisibleCells().map((cell) => (
-                        <td
-                          key={cell.id}
-                          className={cn(
-                            'border-r border-border/10 px-4 py-3.5 last:border-r-0',
-                            (cell.column.columnDef.meta as any)?.align === 'right' && 'text-right',
-                          )}
-                        >
-                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    {table.getHeaderGroups().map((hg) => (
+                      <tr key={hg.id} className="border-b border-border/40">
+                        {hg.headers.map((header) => (
+                          <th
+                            key={header.id}
+                            className={cn(
+                              'border-r border-border/10 px-4 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground/80 last:border-r-0',
+                              (header.column.columnDef.meta as any)?.align === 'right' &&
+                                'text-right',
+                            )}
+                          >
+                            {header.column.getCanSort() ? (
+                              <button
+                                onClick={header.column.getToggleSortingHandler()}
+                                className="inline-flex items-center gap-1 transition-all duration-200 hover:text-foreground active:scale-95"
+                              >
+                                {flexRender(header.column.columnDef.header, header.getContext())}
+                                {header.column.getIsSorted() === 'asc' ? (
+                                  <ArrowUp className="size-3 text-primary" />
+                                ) : header.column.getIsSorted() === 'desc' ? (
+                                  <ArrowDown className="size-3 text-primary" />
+                                ) : (
+                                  <ArrowUpDown className="size-3 opacity-40 hover:opacity-100" />
+                                )}
+                              </button>
+                            ) : (
+                              flexRender(header.column.columnDef.header, header.getContext())
+                            )}
+                          </th>
+                        ))}
+                      </tr>
+                    ))}
+                  </thead>
+                  <tbody>
+                    {table.getRowModel().rows.map((row) => (
+                      <tr
+                        key={row.id}
+                        className="border-b border-border/40 transition-colors duration-150 last:border-0 hover:bg-muted/35"
+                      >
+                        {row.getVisibleCells().map((cell) => (
+                          <td
+                            key={cell.id}
+                            className={cn(
+                              'border-r border-border/10 px-4 py-3.5 last:border-r-0',
+                              (cell.column.columnDef.meta as any)?.align === 'right' && 'text-right',
+                            )}
+                          >
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="md:hidden flex flex-col divide-y divide-border/60">
+                {table.getRowModel().rows.map((row) => {
+                  const cells = row.getVisibleCells();
+                  return (
+                    <div key={row.id} className="p-4 space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        {flexRender(cells[0].column.columnDef.cell, cells[0].getContext())}
+                        <div className="text-right shrink-0">
+                          <p className="text-[10px] font-medium text-muted-foreground mb-0.5">Realized P&L</p>
+                          {flexRender(cells[9].column.columnDef.cell, cells[9].getContext())}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <div className="space-y-0.5">
+                          <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Invested</p>
+                          {flexRender(cells[7].column.columnDef.cell, cells[7].getContext())}
+                        </div>
+                        <div className="space-y-0.5 text-right">
+                          <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Proceeds</p>
+                          {flexRender(cells[8].column.columnDef.cell, cells[8].getContext())}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <div className="space-y-0.5">
+                          <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Avg Buy / Sell</p>
+                          <div className="flex items-center gap-1.5">
+                            {flexRender(cells[5].column.columnDef.cell, cells[5].getContext())}
+                            <span className="text-muted-foreground">/</span>
+                            {flexRender(cells[6].column.columnDef.cell, cells[6].getContext())}
+                          </div>
+                        </div>
+                        <div className="space-y-0.5 text-right">
+                          <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Sold Units</p>
+                          {flexRender(cells[4].column.columnDef.cell, cells[4].getContext())}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between pt-1">
+                        <div className="flex items-center gap-2">
+                          {flexRender(cells[2].column.columnDef.cell, cells[2].getContext())}
+                          {flexRender(cells[1].column.columnDef.cell, cells[1].getContext())}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {flexRender(cells[11].column.columnDef.cell, cells[11].getContext())}
+                          {flexRender(cells[10].column.columnDef.cell, cells[10].getContext())}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

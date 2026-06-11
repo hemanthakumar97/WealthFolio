@@ -4,6 +4,7 @@
 
 IMAGE     ?= hemanthhku/wealthfolio
 PLATFORMS ?= linux/amd64,linux/arm64,linux/arm/v7
+NO_CACHE  ?=
 
 # Auto-derived from git — override with TAG=v1.2.3 for a named release
 GIT_SHA   := $(shell git rev-parse --short HEAD)
@@ -115,5 +116,6 @@ docker-push: docker-builder
 	  --tag $(IMAGE):$(GIT_SHA) \
 	  --tag $(IMAGE):$(VERSION) \
 	  --tag $(IMAGE):latest \
+	  $(NO_CACHE) \
 	  --push \
 	  .
