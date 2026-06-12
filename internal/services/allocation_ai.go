@@ -177,6 +177,18 @@ func (s *SignalService) SuggestAllocations(ctx context.Context, cfg AIConfig, in
 		a.retWeighted += it.Return3M * it.CurrentValue
 	}
 
+	// Compute equity sub-category breakdown (small/mid/large cap) from asset_type and name heuristics.
+	equitySubCats := buildEquitySubBreakdown(instruments, total)
+
+	// Identify categories with zero current allocation — so the AI can suggest starting positions.
+	allCategories := []string{domain.AllocEquity, domain.AllocDebt, domain.AllocMetals, domain.AllocUSEquity, domain.AllocOthers}
+	missingCategories := []string{}
+	for _, cat := range allCategories {
+		if _, exists := catAggs[cat]; !exists {
+			missingCategories = append(missingCategories, cat)
+		}
+	}
+
 	// Market mood (best-effort; non-fatal).
 	var moods []MarketMoodResponse
 	if mm, err := NewMarketMoodService(s.pool).Moods(ctx); err == nil {
@@ -188,12 +200,14 @@ func (s *SignalService) SuggestAllocations(ctx context.Context, cfg AIConfig, in
 	system := buildAllocSystemPrompt(profile, horizon, prompts)
 
 	userPayload := map[string]any{
-		"analysis_date": time.Now().Format("2006-01-02"),
-		"risk_profile":  profile,
-		"horizon":       horizon,
-		"total_value":   math.Round(total),
-		"market_mood":   moods,
-		"instruments":   instruments,
+		"analysis_date":       time.Now().Format("2006-01-02"),
+		"risk_profile":        profile,
+		"horizon":             horizon,
+		"total_value":         math.Round(total),
+		"market_mood":         moods,
+		"instruments":         instruments,
+		"equity_breakdown":    equitySubCats,
+		"missing_categories":  missingCategories,
 	}
 	userJSON, _ := json.Marshal(userPayload)
 
@@ -258,7 +272,7 @@ func (s *SignalService) SuggestAllocations(ctx context.Context, cfg AIConfig, in
 	for _, c := range parsed.CategorySuggestions {
 		aiByCat[strings.ToUpper(strings.TrimSpace(c.AllocCategory))] = c
 	}
-	cats := make([]AllocCategorySuggestion, 0, len(catAggs))
+	cats := make([]AllocCategorySuggestion, 0, len(catAggs)+len(missingCategories))
 	for cat, agg := range catAggs {
 		curPct := agg.value / total * 100
 		trend := "NEUTRAL"
@@ -281,6 +295,18 @@ func (s *SignalService) SuggestAllocations(ctx context.Context, cfg AIConfig, in
 			}
 		}
 		cats = append(cats, c)
+	}
+	// Include zero-allocation categories if the AI recommended starting a position there.
+	for _, cat := range missingCategories {
+		if ai, ok := aiByCat[cat]; ok && ai.SuggestedTargetPercent > 0 {
+			cats = append(cats, AllocCategorySuggestion{
+				AllocCategory:          cat,
+				CurrentPercent:         0,
+				SuggestedTargetPercent: clamp(ai.SuggestedTargetPercent, 0, 100),
+				Trend:                  "NEUTRAL",
+				Reason:                 strings.TrimSpace(ai.Reason),
+			})
+		}
 	}
 
 	// Renormalize category targets to sum exactly 100 across HELD categories.
@@ -395,35 +421,72 @@ func buildAllocSystemPrompt(profile, horizon string, prompts map[string]string) 
 	).Replace(tmpl)
 }
 
-const defaultAllocPrompt = `You are a portfolio allocation strategist for an Indian retail investor. You are given the investor's CURRENT holdings, each annotated with trailing returns (1M/3M/6M/1Y), a quality score (zero1_score, 0–100), a relative rank vs category peers, a category_bearish flag, and a deterministic momentum tag (UPTREND/DOWNTREND/NEUTRAL). You also get the current market mood (index P/E read).
+const defaultAllocPrompt = `You are a portfolio allocation strategist for an Indian retail investor. You are given:
+- CURRENT holdings annotated with trailing returns (1M/3M/6M/1Y), a quality score (zero1_score, 0–100), a relative rank vs category peers, a category_bearish flag, and a momentum tag (UPTREND/DOWNTREND/NEUTRAL)
+- An equity sub-breakdown (small/mid/large cap % split within the EQUITY bucket)
+- A list of missing_categories where the investor currently has 0% allocation
+- The current market mood (index P/E read)
 
-Recommend TARGET allocation percentages — at category level (EQUITY, DEBT, METALS, US_EQUITY, OTHERS) and per instrument — that gently tilt toward what is trending up and away from what is downtrending, while staying diversified.
+Your job: recommend TARGET allocation percentages at both category and instrument level, while also flagging diversification gaps.
 
 Investor risk profile: {{risk_profile}}. Horizon: {{horizon}}.
-Soft guardrail bands for this profile (aim within these where the holdings allow):
+Soft guardrail bands for this profile:
 {{bands}}
 
 Rules:
-- Only allocate across the categories and instruments PROVIDED (the investor's current holdings). Do NOT invent new instruments.
-- Category target percentages must sum to 100.
-- Within each category, instrument target percentages must sum to that category's target.
-- Tilt toward higher trailing returns, higher zero1_score and relative_rank, and UPTREND tags. Reduce DOWNTREND funds and those with category_bearish = true — but do NOT zero out a sound long-term holding entirely unless it is clearly broken.
-- Be gradual: most shifts should be within ±10 percentage points of the current weight. This is a tilt, not a teardown.
-- Respect market mood: if an index is "Red" (expensive), be cautious about increasing that exposure.
+1. EXISTING INSTRUMENTS: tilt toward higher trailing returns, higher zero1_score, UPTREND tags. Reduce DOWNTREND/category_bearish funds gradually (±10pp max shift). Do NOT zero out a sound long-term holding entirely.
+2. MISSING CATEGORIES: if a category in missing_categories fits the risk profile bands, you SHOULD suggest a non-zero target % for it. Explain in the reason that the investor should start building a position (e.g. via a suitable Debt fund, Gold ETF, or US index fund). This is a diversification recommendation.
+3. EQUITY SUB-BALANCE: if the equity breakdown shows heavy concentration in one cap-size (e.g. >80% large-cap only), suggest rebalancing across small/mid/large within the reason field for EQUITY.
+4. CORRELATION: if two instruments are in the same sub-category (e.g. two large-cap index funds), flag the overlap in the reason and suggest trimming the lower-ranked one.
+5. TAX EFFICIENCY: for instruments held <1 year with gains, note in the reason that selling triggers short-term capital gains tax (STCG at 20%) and recommend patience before trimming.
+6. MARKET MOOD: if an index P/E is "Red" (expensive), be cautious about increasing that exposure.
+7. Category targets must sum to 100. Within each category, instrument targets must sum to that category target.
 
 Output STRICT JSON ONLY — no markdown, no commentary — matching exactly:
 {
   "market_context": "<1–2 sentences on the current market read>",
-  "rationale": "<2–4 sentences summarising your overall tilt strategy>",
+  "rationale": "<2–4 sentences summarising your overall tilt strategy and any diversification gaps>",
   "category_suggestions": [
-    {"alloc_category": "EQUITY", "suggested_target_percent": <number>, "trend": "UPTREND|DOWNTREND|NEUTRAL", "reason": "<short>"}
+    {"alloc_category": "EQUITY", "suggested_target_percent": <number>, "trend": "UPTREND|DOWNTREND|NEUTRAL", "reason": "<short, include sub-cap balance note if relevant>"}
   ],
   "instrument_suggestions": [
-    {"instrument_id": <id>, "suggested_target_percent": <number>, "trend": "UPTREND|DOWNTREND|NEUTRAL", "momentum_score": <0-100>, "reason": "<short>"}
+    {"instrument_id": <id>, "suggested_target_percent": <number>, "trend": "UPTREND|DOWNTREND|NEUTRAL", "momentum_score": <0-100>, "reason": "<short, include tax/correlation notes if relevant>"}
   ]
 }`
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
+
+// buildEquitySubBreakdown returns a map of cap-size label → % of total portfolio
+// for funds within the EQUITY bucket, using name heuristics (small/mid/large/flexi).
+func buildEquitySubBreakdown(instruments []allocTrendInstrument, total float64) map[string]float64 {
+	if total <= 0 {
+		return nil
+	}
+	subs := map[string]float64{"large_cap": 0, "mid_cap": 0, "small_cap": 0, "flexi_multi_cap": 0, "other_equity": 0}
+	for _, it := range instruments {
+		if it.AllocCategory != domain.AllocEquity {
+			continue
+		}
+		name := strings.ToLower(it.Name)
+		switch {
+		case strings.Contains(name, "small"):
+			subs["small_cap"] += it.CurrentValue / total * 100
+		case strings.Contains(name, "mid"):
+			subs["mid_cap"] += it.CurrentValue / total * 100
+		case strings.Contains(name, "large") || strings.Contains(name, "nifty 50") || strings.Contains(name, "sensex") || strings.Contains(name, "nifty50") || strings.Contains(name, "index"):
+			subs["large_cap"] += it.CurrentValue / total * 100
+		case strings.Contains(name, "flexi") || strings.Contains(name, "multi"):
+			subs["flexi_multi_cap"] += it.CurrentValue / total * 100
+		default:
+			subs["other_equity"] += it.CurrentValue / total * 100
+		}
+	}
+	// Round all values.
+	for k, v := range subs {
+		subs[k] = round2(v)
+	}
+	return subs
+}
 
 func stripJSONFences(raw string) string {
 	raw = strings.TrimSpace(raw)
