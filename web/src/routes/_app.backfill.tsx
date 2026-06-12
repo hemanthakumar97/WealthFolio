@@ -292,7 +292,7 @@ function RunTab() {
                 type="checkbox" 
                 checked={showMappedOnly}
                 onChange={(e) => setShowMappedOnly(e.target.checked)}
-                className="rounded border-border/80 bg-card/30 text-primary focus:ring-primary h-3.5 w-3.5"
+                className="h-3.5 w-3.5 cursor-pointer accent-violet-500 rounded border-border/80 bg-card/30"
               />
               Show backfilled/mapped instruments only
             </label>
