@@ -1,6 +1,6 @@
 import { Outlet, createFileRoute, redirect, useNavigate, Link } from '@tanstack/react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   LayoutDashboard,
   Wallet,
@@ -84,15 +84,37 @@ function AppLayout() {
 
   const initials = user?.email?.slice(0, 2).toUpperCase() ?? '??';
 
+  const [showMobileNav, setShowMobileNav] = useState(true);
+
+  // Auto-hide mobile nav after 5s of inactivity
+  useEffect(() => {
+    if (!showMobileNav) return;
+    const timer = setTimeout(() => {
+      setShowMobileNav(false);
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [showMobileNav]);
+
+  const handleScroll = useCallback(() => {
+    setShowMobileNav(true);
+  }, []);
+
   return (
     <div
       className={cn(
-        'flex flex-col-reverse md:grid min-h-[100dvh] max-h-[100dvh] bg-background text-foreground transition-[grid-template-columns] duration-200 overflow-hidden',
+        'flex flex-col md:grid min-h-[100dvh] max-h-[100dvh] bg-background text-foreground transition-[grid-template-columns] duration-200 overflow-hidden',
         collapsed ? 'md:grid-cols-[3.5rem_1fr]' : 'md:grid-cols-[16rem_1fr]',
       )}
     >
       {/* Sidebar / Bottom Nav */}
-      <aside className="flex flex-col md:border-r border-t md:border-t-0 border-border bg-card/50 overflow-hidden z-20 shrink-0">
+      <aside className={cn(
+        "flex flex-col md:border-r border-t md:border-t-0 border-border bg-card/95 md:bg-card/50 overflow-hidden z-50 shrink-0",
+        // Desktop: normal grid item
+        "md:relative md:translate-y-0 md:transition-none md:order-first",
+        // Mobile: fixed at bottom, with slide transition
+        "fixed inset-x-0 bottom-0 backdrop-blur-md transition-transform duration-300 ease-in-out",
+        showMobileNav ? "translate-y-0" : "translate-y-full"
+      )}>
         {/* Sidebar header (Desktop only) */}
         <div className={cn('hidden md:flex items-center gap-2 px-3 py-4 shrink-0', collapsed ? 'flex-col' : '')}>
           <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
@@ -156,7 +178,7 @@ function AppLayout() {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto px-4 md:px-8 py-6 md:py-8">
+        <main onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 md:px-8 py-6 md:py-8 pb-20 md:pb-8">
           <Outlet />
         </main>
       </div>
