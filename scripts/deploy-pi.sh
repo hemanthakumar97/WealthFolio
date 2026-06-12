@@ -13,7 +13,7 @@ IMAGE="${IMAGE:-hemanthhku/wealthfolio}"
 PI_HOST="${PI_HOST:-192.168.0.100}"
 PI_USER="${PI_USER:-hemanth}"
 PI_KEY="${PI_KEY:-$HOME/.ssh/homelab_key}"
-PI_DIR="${PI_DIR:-/homelab/wealthfolio}"
+PI_DIR="${PI_DIR:-/homelab/tradefolio}"
 SSH="ssh -i ${PI_KEY} ${PI_USER}@${PI_HOST}"
 
 # ── Flags ────────────────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ if ! $PUSH_ONLY; then
   ok "Image pulled"
 
   step "Restarting container"
-  $SSH "cd ${PI_DIR} && docker compose up -d --force-recreate"
+  $SSH "cd ${PI_DIR} && docker compose -f docker-compose.pi.yml up -d --force-recreate wealthfolio"
   ok "Container restarted"
 
   step "Waiting for health check (30 s)"
