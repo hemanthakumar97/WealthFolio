@@ -610,6 +610,7 @@ function InstrumentView({
 }) {
   const qc = useQueryClient();
   const [filterCat, setFilterCat] = useState<string>('ALL');
+  const [sortBy, setSortBy] = useState<string>('default');
 
   const updateMut = useMutation({
     mutationFn: ({
@@ -623,6 +624,11 @@ function InstrumentView({
   });
 
   const filtered = filterCat === 'ALL' ? data : data.filter((d) => d.alloc_category === filterCat);
+  const sortedFiltered = [...filtered].sort((a, b) => {
+    if (sortBy === 'deviation_desc') return b.deviation - a.deviation;
+    if (sortBy === 'deviation_asc') return a.deviation - b.deviation;
+    return 0; // 'default'
+  });
 
   return (
     <div className="space-y-4">
@@ -648,6 +654,27 @@ function InstrumentView({
                       </SelectItem>
                     ),
                   )}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="relative">
+              <Select value={sortBy} onValueChange={setSortBy}>
+                <SelectTrigger className="h-10 w-48 rounded-xl border-border/60 bg-card/60 text-xs font-semibold shadow-inner focus:ring-1 focus:ring-violet-500/20">
+                  <span className="flex items-center gap-2 text-foreground">
+                    <TrendingUp className="size-3.5 text-muted-foreground/80" />
+                    <SelectValue />
+                  </span>
+                </SelectTrigger>
+                <SelectContent className="rounded-xl border-border/60 bg-card/95 backdrop-blur-md">
+                  <SelectItem value="default" className="text-xs font-medium">
+                    Default Sort
+                  </SelectItem>
+                  <SelectItem value="deviation_desc" className="text-xs font-medium">
+                    Deviation (High to Low)
+                  </SelectItem>
+                  <SelectItem value="deviation_asc" className="text-xs font-medium">
+                    Deviation (Low to High)
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -709,7 +736,7 @@ function InstrumentView({
                       </td>
                     </tr>
                   ) : (
-                    filtered.map((ia) => (
+                    sortedFiltered.map((ia) => (
                       <tr
                         key={ia.instrument_id}
                         className="group transition-colors duration-150 hover:bg-muted/30"
@@ -786,7 +813,7 @@ function InstrumentView({
                     </div>
                   </div>
               ) : (
-                filtered.map((ia) => (
+                sortedFiltered.map((ia) => (
                   <div key={ia.instrument_id} className="p-4 space-y-3 transition-colors duration-150 hover:bg-muted/30">
                     <div className="flex items-start justify-between gap-2">
                       <div>
