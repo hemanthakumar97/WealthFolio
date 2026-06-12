@@ -1,0 +1,1 @@
+{"nodes": [{"id": "migrations_00016_stock_analysis_table", "label": "stock_analysis table", "file_type": "code", "source_file": "internal/db/migrations/00016_stock_analysis.sql", "source_location": "3", "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

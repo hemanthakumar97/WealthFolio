@@ -145,7 +145,6 @@ func NewRouter(deps Deps) http.Handler {
 			// AI Signal
 			r.Route("/ai/signal", func(r chi.Router) {
 				r.Get("/holdings", signalH.GetHoldings)
-				r.With(signalH.withLongTimeout).Post("/holdings", signalH.AnalyseHoldings)
 				r.With(signalH.withLongTimeout).Post("/analyse", signalH.AnalyseStock)
 				r.Get("/instrument-metrics/{instrument_id}", signalH.GetInstrumentMetrics)
 				r.Put("/instrument-metrics/{instrument_id}/groww-slug", signalH.SaveGrowwSlug)

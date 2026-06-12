@@ -53,73 +53,11 @@ func (h *SignalHandler) GetHoldings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-type holdingsAnalysisRequest struct {
-	RiskProfile string `json:"risk_profile"`
-	Goal        string `json:"goal"`
-	Horizon     string `json:"horizon"`
-}
+
 
 type analyseStockRequest struct {
 	Query       string `json:"query"`
 	RiskProfile string `json:"risk_profile"`
-}
-
-// AnalyseHoldings generates AI signals, saves them to DB, returns the result.
-func (h *SignalHandler) AnalyseHoldings(w http.ResponseWriter, r *http.Request) {
-	var req holdingsAnalysisRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	cfg, err := h.loadConfig(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if cfg == nil {
-		writeError(w, http.StatusServiceUnavailable, "AI provider not configured — add your API key in Settings → AI")
-		return
-	}
-
-	profile := services.InvestorProfile{
-		Goal:        sanitise(req.Goal, "Long-term wealth creation"),
-		Horizon:     sanitise(req.Horizon, "5+ years"),
-		RiskProfile: toRiskProfile(req.RiskProfile),
-	}
-
-	// Clear stale cached scores and previous signals so analysis always uses fresh data.
-	h.pool.Exec(r.Context(), `DELETE FROM instrument_scores`)
-	h.pool.Exec(r.Context(), `DELETE FROM signal_results WHERE risk_profile = $1`, string(profile.RiskProfile))
-
-	payload, err := h.signal.BuildPortfolioPayload(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to build portfolio payload: "+err.Error())
-		return
-	}
-	if len(payload.Holdings) == 0 {
-		writeError(w, http.StatusUnprocessableEntity, "no active holdings found — add transactions first")
-		return
-	}
-
-	result, err := h.signal.FetchHoldingsSignals(r.Context(), payload, profile, *cfg)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "AI analysis failed: "+err.Error())
-		return
-	}
-
-	// Persist to DB (best-effort — don't fail the response if save fails).
-	if err := h.signal.SaveSignals(r.Context(), string(profile.RiskProfile), result.Signals); err != nil {
-		// Log but continue — the user still gets their result.
-		_ = err
-	}
-
-	// Reload from DB so GeneratedAt is populated from the actual DB timestamp.
-	if saved, err := h.signal.LoadSignals(r.Context(), string(profile.RiskProfile)); err == nil {
-		result = saved
-	}
-
-	writeJSON(w, http.StatusOK, result)
 }
 
 // AnalyseStock streams a single-stock/fund analysis.

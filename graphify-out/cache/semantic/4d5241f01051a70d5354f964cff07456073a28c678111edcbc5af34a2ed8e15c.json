@@ -1,0 +1,1 @@
+{"nodes": [{"id": "migrations_00010_email_watch_rules_table", "label": "email_watch_rules table", "file_type": "code", "source_file": "internal/db/migrations/00010_email_watch_rules.sql", "source_location": "4", "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

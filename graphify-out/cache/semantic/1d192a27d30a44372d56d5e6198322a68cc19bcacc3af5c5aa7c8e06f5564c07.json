@@ -1,0 +1,1 @@
+{"nodes": [{"id": "services_pdf_extractpdftext", "label": "ExtractPDFText", "file_type": "code", "source_file": "internal/services/pdf_extractor.go", "source_location": "line 17", "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}
