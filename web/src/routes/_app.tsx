@@ -87,14 +87,14 @@ function AppLayout() {
   return (
     <div
       className={cn(
-        'grid min-h-dvh bg-background text-foreground transition-[grid-template-columns] duration-200',
-        collapsed ? 'grid-cols-[3.5rem_1fr]' : 'grid-cols-[16rem_1fr]',
+        'flex flex-col-reverse md:grid min-h-[100dvh] max-h-[100dvh] bg-background text-foreground transition-[grid-template-columns] duration-200 overflow-hidden',
+        collapsed ? 'md:grid-cols-[3.5rem_1fr]' : 'md:grid-cols-[16rem_1fr]',
       )}
     >
-      {/* Sidebar */}
-      <aside className="flex flex-col border-r border-border bg-card/50 overflow-hidden">
-        {/* Sidebar header */}
-        <div className={cn('flex items-center gap-2 px-3 py-4', collapsed ? 'flex-col' : '')}>
+      {/* Sidebar / Bottom Nav */}
+      <aside className="flex flex-col md:border-r border-t md:border-t-0 border-border bg-card/50 overflow-hidden z-20 shrink-0">
+        {/* Sidebar header (Desktop only) */}
+        <div className={cn('hidden md:flex items-center gap-2 px-3 py-4 shrink-0', collapsed ? 'flex-col' : '')}>
           <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
             <Wallet className="size-5" />
           </div>
@@ -120,55 +120,50 @@ function AppLayout() {
         </div>
 
         {/* Nav */}
-        <nav className={cn('flex-1 space-y-1', collapsed ? 'px-1' : 'px-3')}>
+        <nav className={cn(
+          'flex md:flex-col overflow-x-auto md:overflow-y-auto no-scrollbar md:space-y-1 p-2 md:p-0 md:flex-1 md:pb-4',
+          collapsed ? 'md:px-1' : 'md:px-3'
+        )}>
           {navItems.map((item) => (
             <NavLink key={item.to} {...item} collapsed={collapsed} />
           ))}
+          {/* Mobile-only profile button at the end of the scroll list */}
+          <div className="md:hidden ml-auto flex items-center pl-2 border-l border-border/50">
+            <ProfileMenu user={user} initials={initials} logout={logout} collapsed={true} />
+          </div>
         </nav>
 
+        {/* Profile (Desktop only, at bottom) */}
+        <div className="hidden md:flex mt-auto border-t border-border p-3 shrink-0">
+          <ProfileMenu user={user} initials={initials} logout={logout} collapsed={collapsed} />
+        </div>
       </aside>
 
       {/* Main column */}
-      <div className="flex flex-col overflow-hidden">
-        {/* Top bar */}
-        <header className="flex items-center justify-end border-b border-border bg-background/80 backdrop-blur-sm px-6 py-2.5 sticky top-0 z-10">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                title={user?.email}
-                className="grid h-8 w-8 place-items-center rounded-full bg-muted text-[11px] font-semibold uppercase text-foreground ring-offset-background transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-              >
-                {initials}
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <div className="px-3 py-2">
-                <p className="text-xs text-muted-foreground truncate max-w-[180px]">{user?.email ?? '—'}</p>
-              </div>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem asChild>
-                <Link to="/settings" className="flex items-center gap-2">
-                  <Settings className="size-4" />
-                  Settings
-                </Link>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive">
-                <LogOut className="size-4" />
-                Sign out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+      <div className="flex flex-col flex-1 min-w-0 overflow-hidden relative">
+        {/* Mobile Header (just Logo and Privacy toggle, no bulky settings) */}
+        <header className="md:hidden flex items-center justify-between px-4 py-3 border-b border-border bg-card/30 shrink-0">
+          <div className="flex items-center gap-2">
+            <Wallet className="size-5 text-primary" />
+            <span className="font-semibold text-sm">WealthFolio</span>
+          </div>
+          <button
+            onClick={toggle}
+            className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            {masked ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+          </button>
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto px-8 py-8">
+        <main className="flex-1 overflow-y-auto px-4 md:px-8 py-6 md:py-8">
           <Outlet />
         </main>
       </div>
     </div>
   );
 }
+
 
 function NavLink({
   to,
@@ -184,8 +179,8 @@ function NavLink({
   collapsed?: boolean;
 }) {
   const baseClass = cn(
-    'flex items-center rounded-md text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground',
-    collapsed ? 'justify-center p-2' : 'gap-3 px-3 py-2',
+    'flex items-center rounded-md text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground shrink-0',
+    collapsed ? 'justify-center p-2.5 md:p-2' : 'gap-3 px-3 py-2.5 md:py-2 flex-col md:flex-row min-w-[4.5rem] md:min-w-0',
   );
 
   if (disabled) {
@@ -212,8 +207,50 @@ function NavLink({
       activeProps={{ 'aria-current': 'page' }}
       title={collapsed ? label : undefined}
     >
-      <Icon className="size-4" />
-      {!collapsed && label}
+      <Icon className="size-5 md:size-4 mb-1 md:mb-0" />
+      {!collapsed && <span className="text-[10px] md:text-sm">{label}</span>}
     </Link>
+  );
+}
+
+function ProfileMenu({ user, initials, logout, collapsed }: any) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          className={cn(
+            "flex items-center gap-3 rounded-md transition-colors hover:bg-accent hover:text-accent-foreground text-left w-full outline-none",
+            collapsed ? "justify-center p-2" : "p-2"
+          )}
+        >
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary/20 text-primary text-[11px] font-bold uppercase">
+            {initials}
+          </span>
+          {!collapsed && (
+            <div className="flex flex-col min-w-0 flex-1">
+              <span className="text-sm font-medium truncate">{user?.email?.split('@')[0]}</span>
+              <span className="text-[10px] text-muted-foreground truncate">{user?.email}</span>
+            </div>
+          )}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align={collapsed ? "center" : "start"} side="top" className="w-56">
+        <div className="px-3 py-2 md:hidden">
+          <p className="text-xs text-muted-foreground truncate">{user?.email ?? '—'}</p>
+        </div>
+        <DropdownMenuSeparator className="md:hidden" />
+        <DropdownMenuItem asChild>
+          <Link to="/settings" className="flex items-center gap-2 cursor-pointer">
+            <Settings className="size-4" />
+            Settings
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={logout} className="text-destructive focus:text-destructive cursor-pointer">
+          <LogOut className="size-4" />
+          Sign out
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
