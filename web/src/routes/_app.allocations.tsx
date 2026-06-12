@@ -1020,6 +1020,59 @@ function DistributionCalculator() {
               </div>
             )}
 
+            {/* SIP Split Table */}
+            {calcMut.data.sip_split && calcMut.data.sip_split.length > 0 && (
+              <div className="rounded-xl border border-border/50 bg-card/60 overflow-hidden">
+                <div className="bg-muted/10 p-4 border-b border-border/50">
+                  <h4 className="text-sm font-bold text-foreground flex items-center gap-2">
+                    <Wallet className="size-4 text-violet-500" />
+                    Recommended SIP Split
+                  </h4>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Based on your ₹{formatCurrency(Number(amount))} SIP, prioritized by underweight gaps & trends (RCA).
+                  </p>
+                </div>
+                <div className="p-0 overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-muted/5 uppercase text-[10px] font-bold tracking-wider text-muted-foreground">
+                      <tr>
+                        <th className="p-3 font-medium">Fund</th>
+                        <th className="p-3 font-medium text-right">SIP Amount</th>
+                        <th className="p-3 font-medium">Why?</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/40">
+                      {calcMut.data.sip_split.map((s) => (
+                        <tr key={s.instrument_id} className="hover:bg-muted/5 transition-colors">
+                          <td className="p-3">
+                            <p className="font-semibold text-foreground">{s.instrument_name}</p>
+                            <div className="flex items-center gap-1.5 mt-1">
+                              <Badge variant="outline" className="text-[9px] h-4 px-1 rounded bg-muted/20 border-border/40">
+                                {ALLOC_LABELS[s.alloc_category]}
+                              </Badge>
+                              {s.priority === 'HIGH' && (
+                                <Badge className="text-[9px] h-4 px-1 rounded bg-violet-500/10 text-violet-600 border-violet-500/20 hover:bg-violet-500/20">
+                                  Top Priority
+                                </Badge>
+                              )}
+                            </div>
+                          </td>
+                          <td className="p-3 text-right">
+                            <span className="font-bold text-emerald-600 dark:text-emerald-400 text-sm">
+                              {formatCurrency(s.monthly_amount)}
+                            </span>
+                          </td>
+                          <td className="p-3 text-muted-foreground max-w-[200px] leading-relaxed">
+                            {s.reason}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             {/* Distribution details table */}
             <div
               className={cn(
@@ -1186,11 +1239,12 @@ function PctInput({ value, onChange }: { value: string; onChange: (v: string) =>
 function AISuggestPanel({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const [risk, setRisk] = useState<string>('moderate');
+  const [monthlySip, setMonthlySip] = useState<string>('');
   const [catEdit, setCatEdit] = useState<Record<string, string>>({});
   const [instrEdit, setInstrEdit] = useState<Record<number, string>>({});
 
   const suggestMut = useMutation({
-    mutationFn: () => allocationsApi.aiSuggest({ risk_profile: risk }),
+    mutationFn: () => allocationsApi.aiSuggest({ risk_profile: risk, monthly_sip_amount: Number(monthlySip) }),
     onMutate: () => {
       setCatEdit({});
       setInstrEdit({});
@@ -1256,6 +1310,16 @@ function AISuggestPanel({ onClose }: { onClose: () => void }) {
               ))}
             </SelectContent>
           </Select>
+          <div className="relative">
+            <span className="absolute inset-y-0 left-2.5 flex items-center text-xs text-muted-foreground font-medium">₹</span>
+            <Input
+              type="number"
+              value={monthlySip}
+              onChange={(e) => setMonthlySip(e.target.value)}
+              placeholder="SIP / month"
+              className="h-9 w-28 pl-6 pr-3 rounded-xl border-border/60 bg-card/60 text-xs font-semibold shadow-sm"
+            />
+          </div>
           <Button
             onClick={() => suggestMut.mutate()}
             disabled={suggestMut.isPending}

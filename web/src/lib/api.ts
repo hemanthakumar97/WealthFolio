@@ -600,6 +600,18 @@ export interface AllocSuggestResult {
   rationale: string;
   category_suggestions: AllocCategorySuggestion[];
   instrument_suggestions: AllocInstrumentSuggestion[];
+  sip_split: SIPFundSplit[] | null;
+}
+
+export interface SIPFundSplit {
+  instrument_id: number;
+  instrument_name: string;
+  alloc_category: AllocCategory;
+  monthly_amount: number;       // ₹ to invest this month
+  gap_percent: number;          // target - current (positive = underweight)
+  trend: TrendTag;
+  priority: 'HIGH' | 'MEDIUM' | 'LOW'; // HIGH = underweight + cheap (DOWNTREND)
+  reason: string;
 }
 
 export const allocationsApi = {
@@ -632,7 +644,7 @@ export const allocationsApi = {
     ),
   seedFromHoldings: () =>
     request<{ seeded: number }>('/api/allocations/seed-from-holdings', { method: 'POST' }),
-  aiSuggest: (body: { risk_profile: string; horizon?: string }) =>
+  aiSuggest: (body: { risk_profile: string; horizon?: string; monthly_sip_amount?: number }) =>
     request<AllocSuggestResult>('/api/allocations/ai-suggest', {
       method: 'POST',
       body: JSON.stringify(body),

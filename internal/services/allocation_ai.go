@@ -15,8 +15,9 @@ import (
 
 // AllocSuggestInput is the request for an AI allocation suggestion.
 type AllocSuggestInput struct {
-	RiskProfile string
-	Horizon     string
+	RiskProfile     string
+	Horizon         string
+	MonthlySIPAmount float64 // optional; if >0 a SIP split is computed
 }
 
 // AllocCategorySuggestion is the AI's recommended target for one alloc_category.
@@ -40,6 +41,18 @@ type AllocInstrumentSuggestion struct {
 	Reason                 string  `json:"reason"`
 }
 
+// SIPFundSplit is one line of the monthly SIP allocation recommendation.
+type SIPFundSplit struct {
+	InstrumentID   int64   `json:"instrument_id"`
+	InstrumentName string  `json:"instrument_name"`
+	AllocCategory  string  `json:"alloc_category"`
+	MonthlyAmount  float64 `json:"monthly_amount"`
+	GapPercent     float64 `json:"gap_percent"`
+	Trend          string  `json:"trend"`
+	Priority       string  `json:"priority"` // HIGH | MEDIUM | LOW
+	Reason         string  `json:"reason"`
+}
+
 // AllocSuggestResult is the full reviewed-before-apply suggestion set.
 type AllocSuggestResult struct {
 	RiskProfile           string                      `json:"risk_profile"`
@@ -48,6 +61,7 @@ type AllocSuggestResult struct {
 	Rationale             string                      `json:"rationale"`
 	CategorySuggestions   []AllocCategorySuggestion   `json:"category_suggestions"`
 	InstrumentSuggestions []AllocInstrumentSuggestion `json:"instrument_suggestions"`
+	SIPSplit              []SIPFundSplit              `json:"sip_split"`
 }
 
 // allocTrendInstrument is one held instrument annotated with trend facts, sent
@@ -326,6 +340,12 @@ func (s *SignalService) SuggestAllocations(ctx context.Context, cfg AIConfig, in
 
 	result.CategorySuggestions = cats
 	result.InstrumentSuggestions = instrSugg
+
+	// Compute SIP split if the caller requested it.
+	if in.MonthlySIPAmount > 0 {
+		result.SIPSplit = computeSIPSplit(instrSugg, in.MonthlySIPAmount)
+	}
+
 	return result, nil
 }
 
@@ -546,4 +566,98 @@ func scaleToTarget(list []AllocInstrumentSuggestion, target float64) {
 	for i := range list {
 		list[i].SuggestedTargetPercent = round2(list[i].SuggestedTargetPercent / sum * target)
 	}
+}
+
+// computeSIPSplit calculates how to distribute a monthly SIP amount across instruments
+// to bridge the gap between their current and target percentages.
+// It prioritizes DOWNTREND funds that are underweight (rupee cost averaging).
+func computeSIPSplit(suggestions []AllocInstrumentSuggestion, monthlyAmount float64) []SIPFundSplit {
+	if monthlyAmount <= 0 || len(suggestions) == 0 {
+		return nil
+	}
+
+	type candidate struct {
+		instr  AllocInstrumentSuggestion
+		gap    float64
+		weight float64
+	}
+
+	var candidates []candidate
+	var totalWeight float64
+
+	for _, s := range suggestions {
+		gap := s.SuggestedTargetPercent - s.CurrentPercent
+		if gap <= 0 {
+			continue // Fully funded or overweight
+		}
+
+		// Base weight is the gap itself.
+		weight := gap
+
+		// Multiplier for buying the dip.
+		// If the AI kept a target > current despite a DOWNTREND, it's a structural
+		// hold, so buying it now is buying cheap (rupee cost averaging).
+		if s.Trend == "DOWNTREND" {
+			weight *= 1.5
+		} else if s.Trend == "UPTREND" {
+			weight *= 1.0 // Normal momentum buying
+		}
+
+		candidates = append(candidates, candidate{instr: s, gap: gap, weight: weight})
+		totalWeight += weight
+	}
+
+	if len(candidates) == 0 {
+		return nil // No one is underweight!
+	}
+
+	var results []SIPFundSplit
+	var distributed float64
+
+	for i, c := range candidates {
+		// Calculate proportional amount based on weight
+		amount := math.Floor((c.weight / totalWeight) * monthlyAmount)
+		
+		// Ensure the last item gets the exact remainder to avoid rounding errors
+		if i == len(candidates)-1 {
+			amount = monthlyAmount - distributed
+		}
+
+		if amount < 0 {
+			amount = 0
+		}
+
+		distributed += amount
+
+		priority := "MEDIUM"
+		reason := fmt.Sprintf("Underweight by %.1f%%.", c.gap)
+		if c.instr.Trend == "DOWNTREND" {
+			priority = "HIGH"
+			reason += " Buying the dip (RCA)."
+		}
+
+		if amount > 0 {
+			results = append(results, SIPFundSplit{
+				InstrumentID:   c.instr.InstrumentID,
+				InstrumentName: c.instr.InstrumentName,
+				AllocCategory:  c.instr.AllocCategory,
+				MonthlyAmount:  amount,
+				GapPercent:     round2(c.gap),
+				Trend:          c.instr.Trend,
+				Priority:       priority,
+				Reason:         reason,
+			})
+		}
+	}
+
+	// Sort by amount descending
+	for i := 0; i < len(results); i++ {
+		for j := i + 1; j < len(results); j++ {
+			if results[i].MonthlyAmount < results[j].MonthlyAmount {
+				results[i], results[j] = results[j], results[i]
+			}
+		}
+	}
+
+	return results
 }

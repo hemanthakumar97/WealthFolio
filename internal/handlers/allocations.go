@@ -399,8 +399,9 @@ func (h *AllocationsHandler) SeedFromHoldings(w http.ResponseWriter, r *http.Req
 // --- AI target suggestions ---
 
 type aiSuggestInput struct {
-	RiskProfile string `json:"risk_profile"`
-	Horizon     string `json:"horizon"`
+	RiskProfile      string  `json:"risk_profile"`
+	Horizon          string  `json:"horizon"`
+	MonthlySIPAmount float64 `json:"monthly_sip_amount"`
 }
 
 // AISuggest asks the AI for trend-tilted target percentages (category +
@@ -424,7 +425,7 @@ func (h *AllocationsHandler) AISuggest(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.signal.SuggestAllocations(r.Context(),
 		services.AIConfig{Provider: provider, APIKey: key, Model: model},
-		services.AllocSuggestInput{RiskProfile: req.RiskProfile, Horizon: req.Horizon})
+		services.AllocSuggestInput{RiskProfile: req.RiskProfile, Horizon: req.Horizon, MonthlySIPAmount: req.MonthlySIPAmount})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
