@@ -143,7 +143,7 @@ function AppLayout() {
 
         {/* Nav */}
         <nav className={cn(
-          'flex md:flex-col overflow-x-auto md:overflow-y-auto no-scrollbar md:space-y-1 p-2 md:p-0 md:flex-1 md:pb-4',
+          'flex md:flex-col overflow-x-auto md:overflow-y-auto no-scrollbar md:space-y-1 p-1 md:p-0 md:flex-1 md:pb-4 gap-1 md:gap-0',
           collapsed ? 'md:px-1' : 'md:px-3'
         )}>
           {navItems.map((item) => (
@@ -178,7 +178,12 @@ function AppLayout() {
         </header>
 
         {/* Page content */}
-        <main onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 md:px-8 py-6 md:py-8 pb-20 md:pb-8">
+        <main 
+          onScroll={handleScroll} 
+          onTouchStart={handleScroll}
+          onClick={handleScroll}
+          className="flex-1 overflow-y-auto px-4 md:px-8 py-6 md:py-8 pb-20 md:pb-8"
+        >
           <Outlet />
         </main>
       </div>
@@ -202,7 +207,7 @@ function NavLink({
 }) {
   const baseClass = cn(
     'flex items-center rounded-md text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground shrink-0',
-    collapsed ? 'justify-center p-2.5 md:p-2' : 'gap-3 px-3 py-2.5 md:py-2 flex-col md:flex-row min-w-[4.5rem] md:min-w-0',
+    collapsed ? 'justify-center p-2.5 md:p-2' : 'gap-1 px-1 py-2 md:py-2 flex-col md:flex-row flex-1 md:flex-none min-w-[4.2rem] md:min-w-0',
   );
 
   if (disabled) {
