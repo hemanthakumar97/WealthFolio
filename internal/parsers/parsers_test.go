@@ -3,6 +3,7 @@ package parsers_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hemanthakumar97/wealthfolio/internal/parsers"
 )
@@ -110,5 +111,32 @@ func TestUnknownFormatErrors(t *testing.T) {
 	_, _, err := parsers.Detect(junk)
 	if err == nil {
 		t.Fatal("expected ErrNoParser, got nil")
+	}
+}
+
+func TestIndMoneyOrderEmailInstrumentName(t *testing.T) {
+	cases := []struct {
+		name, subject, stock, want string
+	}{
+		{"multi-word fund name", "BUY order of ProShares UltraPro QQQ for $100 is successful", "ProShares UltraPro QQQ", "ProShares UltraPro QQQ"},
+		{"single ticker", "Your order is successful", "TQQQ", "TQQQ"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := `<table>
+<tr><td>Stock</td><td>` + c.stock + `</td></tr>
+<tr><td>Amount</td><td>$100</td></tr>
+<tr><td>Price</td><td>$60.86</td></tr>
+<tr><td>Shares</td><td>1.63824</td></tr>
+</table>`
+			p := &parsers.IndMoneyOrderEmailParser{}
+			out, errs := p.ParseEmail(body, "msg1", c.subject, time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC))
+			if len(errs) > 0 || len(out) != 1 {
+				t.Fatalf("ParseEmail: out=%d errs=%v", len(out), errs)
+			}
+			if out[0].InstrumentName != c.want {
+				t.Errorf("InstrumentName: got %q, want %q", out[0].InstrumentName, c.want)
+			}
+		})
 	}
 }
