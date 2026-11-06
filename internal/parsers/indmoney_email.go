@@ -200,6 +200,8 @@ var (
 	reOEAmount = regexp.MustCompile(`(?i)(?:amount|order\s*amount|filled\s*amount|transaction\s*amount)\s*[:\n]+\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)`)
 	reOEPrice  = regexp.MustCompile(`(?i)(?:price|average\s*price|avg\.?\s*price|executed\s*price)\s*[:\n]+\s*\$?\s*([0-9,]+(?:\.[0-9]+)?)`)
 	reOEShares = regexp.MustCompile(`(?i)(?:shares|quantity|qty|filled\s*quantity)\s*[:\n]+\s*([0-9,]+(?:\.[0-9]+)?)`)
+
+	reOESubjectName = regexp.MustCompile(`(?i)(?:buy|sell) order of (.+?) for \$`)
 )
 
 // IndMoneyOrderEmailParser extracts NormalizedTransactions from IndMoney US
@@ -217,7 +219,12 @@ func (p *IndMoneyOrderEmailParser) ParseEmail(htmlBody, messageID, subject strin
 		return ""
 	}
 
+	// The subject carries the full instrument name ("BUY order of ProShares UltraPro QQQ for $100");
+	// the body regex only captures the first word of a multi-word name.
 	ticker := match(reOETicker)
+	if m := reOESubjectName.FindStringSubmatch(subject); len(m) > 1 {
+		ticker = strings.TrimSpace(m[1])
+	}
 	amountRaw := match(reOEAmount)
 	priceRaw := match(reOEPrice)
 	sharesRaw := match(reOEShares)

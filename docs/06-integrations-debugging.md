@@ -200,6 +200,7 @@ The email parsers do **not** implement the `Parser` interface (which is `[][]str
 - `groww_mf` → `GrowwEmailParser.ParseEmail`
 - `zerodha_contract_note` → PDF decrypt → `ZerodhaContractNoteParser.ParseContractNote`
 - `indmoney_us` → `IndMoneyEmailParser.ParseEmail`
+- `indmoney_us_order` → `IndMoneyOrderEmailParser.ParseEmail`. The instrument name comes from the subject (`BUY|SELL order of <name> for $…`, full name e.g. "ProShares UltraPro QQQ"); the body `reOETicker` is only a fallback because it captures just the first word. `FindOrCreate` matches by exact name, so a subject name that differs from the stored one (e.g. "Apple Inc" vs "Apple Inc. Common Stock") creates a new instrument.
 
 Subject date parsing for Zerodha contract notes happens in `parsers.ParseSubjectDate` (called at `gmail_watcher.go:259, 438`); failure falls back to the email's internal date.
 
